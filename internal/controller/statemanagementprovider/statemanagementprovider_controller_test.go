@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,7 +33,7 @@ import (
 	discoveryfake "k8s.io/client-go/discovery/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -203,11 +204,9 @@ func TestReconciler_ensureRBAC(t *testing.T) {
 
 		kubeClient := fakeKubeClient(t, tc.stateManagementProvider, tc.existingRBACObjects...)
 		reconciler := Reconciler{
-			Client:   kubeClient,
-			timeFunc: func() time.Time { return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC) },
-			discoveryClientFunc: func(_ *rest.Config) (discovery.DiscoveryInterface, error) {
-				return fakeDiscoveryClient(t, tc.discoveryResources), nil
-			},
+			Client:          kubeClient,
+			timeFunc:        func() time.Time { return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC) },
+			restMapper:      fakeRESTMapper(t, tc.discoveryResources),
 			SystemNamespace: systemNamespace,
 		}
 
@@ -582,6 +581,16 @@ func fakeDiscoveryClient(t *testing.T, resources []*metav1.APIResourceList) disc
 	}
 	fakeDiscovery.Resources = resources
 	return fakeDiscovery
+}
+
+func fakeRESTMapper(t *testing.T, resources []*metav1.APIResourceList) apimeta.RESTMapper {
+	t.Helper()
+	dc := fakeDiscoveryClient(t, resources)
+	groupResources, err := restmapper.GetAPIGroupResources(dc)
+	if err != nil {
+		t.Fatalf("failed to get API group resources: %v", err)
+	}
+	return restmapper.NewDiscoveryRESTMapper(groupResources)
 }
 
 func scheme(t *testing.T) *runtime.Scheme {

@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
@@ -63,18 +64,17 @@ const (
 )
 
 type (
-	DiscoveryClientFunc func(*rest.Config) (discovery.DiscoveryInterface, error)
-	DynamicClientFunc   func(*rest.Config) (dynamic.Interface, error)
+	DynamicClientFunc func(*rest.Config) (dynamic.Interface, error)
 )
 
 // Reconciler reconciles a StateManagementProvider object
 type Reconciler struct {
 	client.Client
 
-	discoveryClientFunc DiscoveryClientFunc
-	dynamicClientFunc   DynamicClientFunc
+	dynamicClientFunc DynamicClientFunc
 
 	config          *rest.Config
+	restMapper      apimeta.RESTMapper
 	timeFunc        func() time.Time
 	SystemNamespace string
 }
@@ -166,9 +166,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	r.config = mgr.GetConfig()
 
-	r.discoveryClientFunc = func(config *rest.Config) (discovery.DiscoveryInterface, error) {
-		return discovery.NewDiscoveryClientForConfig(config)
+	// Initialize cached discovery client and REST mapper once at startup
+	dc, err := discovery.NewDiscoveryClientForConfig(r.config)
+	if err != nil {
+		return fmt.Errorf("failed to create discovery client: %w", err)
 	}
+	cachedDiscovery := memory.NewMemCacheClient(dc)
+	r.restMapper = restmapper.NewDeferredDiscoveryRESTMapper(cachedDiscovery)
+
 	r.dynamicClientFunc = func(config *rest.Config) (dynamic.Interface, error) {
 		return dynamic.NewForConfig(config)
 	}
@@ -205,7 +210,7 @@ func (r *Reconciler) ensureRBAC(ctx context.Context, smp *kcmv1.StateManagementP
 		l.V(1).Info("Finished ensuring RBAC", "duration", time.Since(start))
 	}()
 
-	adapterGVR, err := r.gvrFromResourceReference(ctx, r.config, smp.Spec.Adapter)
+	adapterGVR, err := r.gvrFromResourceReference(ctx, smp.Spec.Adapter)
 	if err != nil {
 		reason = kcmv1.StateManagementProviderRBACFailedToGetGVKForAdapterReason
 		message = fmt.Sprintf("Failed to ensure RBAC: %v", err)
@@ -214,7 +219,7 @@ func (r *Reconciler) ensureRBAC(ctx context.Context, smp *kcmv1.StateManagementP
 	gvrList := []schema.GroupVersionResource{adapterGVR}
 
 	for _, provisioner := range smp.Spec.Provisioner {
-		provisionerGVR, err := r.gvrFromResourceReference(ctx, r.config, provisioner)
+		provisionerGVR, err := r.gvrFromResourceReference(ctx, provisioner)
 		if err != nil {
 			reason = kcmv1.StateManagementProviderRBACFailedToGetGVKForProvisionerReason
 			message = fmt.Sprintf("Failed to ensure RBAC: %v", err)
@@ -572,7 +577,7 @@ func buildRBACRules(gvrList []schema.GroupVersionResource) []rbacv1.PolicyRule {
 func (r *Reconciler) getReferencedObject(ctx context.Context, config *rest.Config, ref kcmv1.ResourceReference) (*unstructured.Unstructured, error) {
 	l := ctrl.LoggerFrom(ctx)
 	l.Info("Getting referenced object", "ref", ref)
-	gvr, err := r.gvrFromResourceReference(ctx, config, ref)
+	gvr, err := r.gvrFromResourceReference(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GVK from resource reference %s: %w", ref, err)
 	}
@@ -589,9 +594,11 @@ func (r *Reconciler) getReferencedObject(ctx context.Context, config *rest.Confi
 }
 
 // gvrFromResourceReference returns the GVR for the given resource reference.
-func (r *Reconciler) gvrFromResourceReference(ctx context.Context, config *rest.Config, ref kcmv1.ResourceReference) (schema.GroupVersionResource, error) {
+func (r *Reconciler) gvrFromResourceReference(ctx context.Context, ref kcmv1.ResourceReference) (schema.GroupVersionResource, error) {
 	l := ctrl.LoggerFrom(ctx)
-	l.Info("Getting GVR from resource reference", "resource_reference", ref)
+	l.V(1).Info("Getting GVR from resource reference", "resource_reference", ref)
+
+	// Parse GVK from reference
 	gvk := schema.GroupVersionKind{
 		Kind: ref.Kind,
 	}
@@ -603,25 +610,15 @@ func (r *Reconciler) gvrFromResourceReference(ctx context.Context, config *rest.
 		gvk.Group = groupVersion[0]
 		gvk.Version = groupVersion[1]
 	default:
-		err := fmt.Errorf("invalid API version %s", ref.APIVersion)
-		return schema.GroupVersionResource{}, fmt.Errorf("failed to get GVR from resource reference %s: %w", ref, err)
+		return schema.GroupVersionResource{}, fmt.Errorf("invalid API version %s for resource reference %s", ref.APIVersion, ref)
 	}
 
-	dc, err := r.discoveryClientFunc(config)
-	if err != nil {
-		return schema.GroupVersionResource{}, fmt.Errorf("failed to create discovery client: %w", err)
-	}
-
-	apiResources, err := restmapper.GetAPIGroupResources(dc)
-	if err != nil {
-		return schema.GroupVersionResource{}, fmt.Errorf("failed to get API group resources: %w", err)
-	}
-
-	mapper := restmapper.NewDiscoveryRESTMapper(apiResources)
-	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	// Use cached REST mapper (auto-invalidates on errors and retries)
+	mapping, err := r.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		return schema.GroupVersionResource{}, fmt.Errorf("failed to get REST mapping for %s: %w", gvk.String(), err)
 	}
+
 	l.V(1).Info("Found GVR", "gvr", mapping.Resource)
 	return mapping.Resource, nil
 }
