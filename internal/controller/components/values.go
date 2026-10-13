@@ -203,8 +203,33 @@ func getSveltosValues(opts ReconcileComponentsOpts, env envConfig) chartutil.Val
 	}
 
 	return map[string]any{
-		"projectsveltos": projectsveltos,
+		"projectsveltos":       projectsveltos,
+		"ksm-provider-sveltos": getStateManagementAdapterValues(opts),
 	}
+}
+
+const adapterEnabledKey = "enabled"
+
+// getStateManagementAdapterValues wires the adapter shipped with projectsveltos
+// to kcm. The adapter runs next to kcm only, so it stays disabled unless configured.
+func getStateManagementAdapterValues(opts ReconcileComponentsOpts) map[string]any {
+	adapter := opts.StateManagementAdapter
+	if adapter == nil {
+		return map[string]any{adapterEnabledKey: false}
+	}
+
+	values := map[string]any{
+		adapterEnabledKey: true,
+		// kcm's registry allow-list refers to the adapter's ServiceAccount by this name.
+		"fullnameOverride":  "ksm-provider-sveltos",
+		"systemNamespace":   opts.Namespace,
+		"kcmServiceAccount": adapter.KCMServiceAccount,
+		"tls":               map[string]any{"insecure": adapter.Insecure},
+	}
+	if adapter.RegistryURL != "" {
+		values["registry"] = map[string]any{"url": adapter.RegistryURL}
+	}
+	return values
 }
 
 func getGlobalValues(

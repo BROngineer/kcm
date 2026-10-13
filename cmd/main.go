@@ -41,6 +41,7 @@ import (
 	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
 	"github.com/K0rdent/kcm/internal/build"
 	"github.com/K0rdent/kcm/internal/controller"
+	"github.com/K0rdent/kcm/internal/controller/components"
 	"github.com/K0rdent/kcm/internal/controller/ipam"
 	"github.com/K0rdent/kcm/internal/controller/region"
 	"github.com/K0rdent/kcm/internal/controller/serviceset"
@@ -57,6 +58,7 @@ import (
 
 type config struct {
 	ksmProviderTokenFile          string
+	ksmRegistryURL                string
 	kcmTemplatesChartName         string
 	determinedRepositoryType      string
 	registryCredentialsSecretName string
@@ -112,6 +114,7 @@ func main() {
 		pprofBindAddress              string
 		leaderElectionNamespace       string
 		ksmRegistryBindAddress        string
+		ksmRegistryURL                string
 		ksmRegistryCertDir            string
 		ksmProviderTokenFile          string
 		ksmAllowedProviders           []string
@@ -159,6 +162,8 @@ func main() {
 		"Webhook cert dir, only used when webhook-port is specified.")
 	flag.StringVar(&pprofBindAddress, "pprof-bind-address", "", "The TCP address that the controller should bind to for serving pprof, \"0\" or empty value disables pprof")
 	flag.StringVar(&ksmRegistryBindAddress, "ksm-registry-bind-address", ":8443", "The address the state management provider registry binds to.")
+	flag.StringVar(&ksmRegistryURL, "ksm-registry-url", "",
+		"URL state management providers reach the registry at; handed to the adapter kcm installs. Empty keeps the adapter chart default.")
 	flag.StringVar(&ksmRegistryCertDir, "ksm-registry-cert-dir", "/etc/ksm-registry/tls",
 		"Directory with tls.crt and tls.key serving the state management provider registry.")
 	flag.BoolVar(&ksmRegistryInsecure, "ksm-registry-insecure", false,
@@ -322,6 +327,7 @@ func main() {
 			Insecure:    ksmRegistryInsecure,
 		},
 		ksmProviderTokenFile:    ksmProviderTokenFile,
+		ksmRegistryURL:          ksmRegistryURL,
 		ksmMaxProviderTimeout:   ksmMaxProviderTimeout,
 		defaultHelmTimeout:      defaultHelmTimeout,
 		capiClusterPollInterval: capiClusterPollInterval,
@@ -415,6 +421,11 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		DefaultHelmTimeout:            cfg.defaultHelmTimeout,
 		CAPIClusterPollInterval:       cfg.capiClusterPollInterval,
 		EnableInPlaceUpdates:          cfg.enableInPlaceUpdates,
+		StateManagementAdapter: &components.StateManagementAdapterOpts{
+			RegistryURL:       cfg.ksmRegistryURL,
+			KCMServiceAccount: currentNamespace + "/" + os.Getenv("KCM_NAME"),
+			Insecure:          cfg.ksmRegistry.Insecure,
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Management")
 		return err

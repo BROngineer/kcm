@@ -64,16 +64,18 @@ import (
 
 // ManagementReconciler reconciles a Management object
 type ManagementReconciler struct {
-	Client                        client.Client
-	Manager                       manager.Manager
-	Config                        *rest.Config
-	DynamicClient                 *dynamic.DynamicClient
-	SystemNamespace               string
-	GlobalRegistry                string
-	GlobalK0sURL                  string
-	K0sURLCertSecretName          string // Name of a Secret with K0s Download URL Root CA with ca.crt key; to be passed to the ClusterDeploymentReconciler
-	RegistryCertSecretName        string // Name of a Secret with Registry Root CA with ca.crt key; used by ManagementReconciler and ClusterDeploymentReconciler
-	ImagePullSecretName           *string
+	Client                 client.Client
+	Manager                manager.Manager
+	Config                 *rest.Config
+	DynamicClient          *dynamic.DynamicClient
+	SystemNamespace        string
+	GlobalRegistry         string
+	GlobalK0sURL           string
+	K0sURLCertSecretName   string // Name of a Secret with K0s Download URL Root CA with ca.crt key; to be passed to the ClusterDeploymentReconciler
+	RegistryCertSecretName string // Name of a Secret with Registry Root CA with ca.crt key; used by ManagementReconciler and ClusterDeploymentReconciler
+	ImagePullSecretName    *string
+	// StateManagementAdapter configures the adapter shipped with the projectsveltos component.
+	StateManagementAdapter        *components.StateManagementAdapterOpts
 	RegistryCredentialsSecretName string
 
 	DefaultHelmTimeout      time.Duration
@@ -197,6 +199,7 @@ func (r *ManagementReconciler) update(ctx context.Context, management *kcmv1.Man
 		RegistryCertSecretName: r.RegistryCertSecretName,
 		ImagePullSecretName:    r.ImagePullSecretName,
 		EnableInPlaceUpdates:   r.EnableInPlaceUpdates,
+		StateManagementAdapter: r.StateManagementAdapter,
 	}
 
 	requeue, errs := components.Reconcile(ctx, r.Client, r.Client, management, r.Config, release, opts)

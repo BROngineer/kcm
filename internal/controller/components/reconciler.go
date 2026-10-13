@@ -59,6 +59,9 @@ type ReconcileComponentsOpts struct {
 	ImagePullSecretName *string
 	// Labels defines additional labels to apply to the created HelmReleases.
 	Labels map[string]string
+	// StateManagementAdapter enables the state management provider adapter shipped with
+	// the projectsveltos component. Nil disables it, e.g. in regional clusters.
+	StateManagementAdapter *StateManagementAdapterOpts
 
 	// Namespace is the namespace to install components in.
 	Namespace string
@@ -79,6 +82,17 @@ type ReconcileComponentsOpts struct {
 	CertManagerInstalled bool
 	// EnableInPlaceUpdates indicates whether the Cluster API in-place updates should be enabled in the components values.
 	EnableInPlaceUpdates bool
+}
+
+// StateManagementAdapterOpts configures the state management provider adapter
+// shipped with the projectsveltos component.
+type StateManagementAdapterOpts struct {
+	// RegistryURL is the URL of kcm's provider registry; empty keeps the chart default.
+	RegistryURL string
+	// KCMServiceAccount is the namespace/name of the ServiceAccount kcm calls the adapter with.
+	KCMServiceAccount string
+	// Insecure serves and calls plain HTTP instead of TLS.
+	Insecure bool
 }
 
 type clusterInterface interface {

@@ -620,6 +620,64 @@ func Test_getComponentValues_ImagePullSecretGlobal(t *testing.T) {
 	}
 }
 
+func Test_getComponentValues_StateManagementAdapter(t *testing.T) {
+	tests := []struct {
+		name    string
+		adapter *StateManagementAdapterOpts
+		want    map[string]any
+	}{
+		{
+			name: "adapter is disabled when not configured",
+			want: map[string]any{"enabled": false},
+		},
+		{
+			name: "adapter is enabled and wired to kcm",
+			adapter: &StateManagementAdapterOpts{
+				RegistryURL:       "http://kcm-ksm-registry.kcm-system.svc:8443",
+				KCMServiceAccount: "kcm-system/kcm-controller-manager",
+				Insecure:          true,
+			},
+			want: map[string]any{
+				"enabled":           true,
+				"fullnameOverride":  "ksm-provider-sveltos",
+				"systemNamespace":   "kcm-system",
+				"kcmServiceAccount": "kcm-system/kcm-controller-manager",
+				"registry":          map[string]any{"url": "http://kcm-ksm-registry.kcm-system.svc:8443"},
+				"tls":               map[string]any{"insecure": true},
+			},
+		},
+		{
+			name: "registry url is left to the chart when empty",
+			adapter: &StateManagementAdapterOpts{
+				KCMServiceAccount: "kcm-system/kcm-controller-manager",
+			},
+			want: map[string]any{
+				"enabled":           true,
+				"fullnameOverride":  "ksm-provider-sveltos",
+				"systemNamespace":   "kcm-system",
+				"kcmServiceAccount": "kcm-system/kcm-controller-manager",
+				"tls":               map[string]any{"insecure": false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			componentValues, err := getComponentValues(
+				t.Context(),
+				kcmv1.ProviderSveltosName,
+				nil,
+				ReconcileComponentsOpts{Namespace: "kcm-system", StateManagementAdapter: tt.adapter},
+			)
+			require.NoError(t, err)
+
+			values := make(map[string]any)
+			require.NoError(t, json.Unmarshal(componentValues.Raw, &values))
+			require.Equal(t, tt.want, values["ksm-provider-sveltos"])
+		})
+	}
+}
+
 func Test_getComponentValues_EnableInPlaceUpdates(t *testing.T) {
 	tests := []struct {
 		name                 string
