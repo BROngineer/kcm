@@ -49,7 +49,7 @@ var (
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Sveltos Adapter Integration")
+	RunSpecs(t, "ServiceSet Controller Integration")
 }
 
 var _ = BeforeSuite(func() {

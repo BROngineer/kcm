@@ -488,15 +488,6 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		}
 		setupLog.Info("setup for ServiceSet controller successful")
 	}
-
-	if cfg.enableSveltosExpireCtrl {
-		if err = (&serviceset.ClusterReconciler{
-			Client: mgr.GetClient(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "SveltosCluster")
-			return err
-		}
-	}
 	return nil
 }
 
