@@ -173,8 +173,9 @@ func (r *ServiceSetReconciler) setStatusesCollected(serviceSet *kcmv1.ServiceSet
 }
 
 // servicesFromProvider converts the services reported by the provider. The
-// last deployed hash and the per-service conditions are owned by kcm's
-// verifier, so they are kept from the current status.
+// last deployed hash, the per-service conditions and the version of Helm
+// services are owned by kcm's verifier, so they are kept from the current
+// status: the provider echoes them from a possibly older read of the status.
 func servicesFromProvider(current []kcmv1.ServiceState, reported []provider.ServiceState, now time.Time) []kcmv1.ServiceState {
 	byKey := make(map[client.ObjectKey]kcmv1.ServiceState, len(current))
 	for _, s := range current {
@@ -196,6 +197,9 @@ func servicesFromProvider(current []kcmv1.ServiceState, reported []provider.Serv
 		if known {
 			state.LastDeployedHash = prev.LastDeployedHash
 			state.Conditions = prev.Conditions
+			if state.Type == kcmv1.ServiceTypeHelm {
+				state.Version = prev.Version
+			}
 		}
 		// the contract leaves the transition time optional while the CRD requires it.
 		switch {

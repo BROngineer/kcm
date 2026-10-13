@@ -201,12 +201,14 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 					Type:                    kcmv1.ServiceTypeHelm,
 					State:                   kcmv1.ServiceStateProvisioning,
 					LastStateTransitionTime: new(metav1.Now()),
+					Version:                 "0.9.0",
 					LastDeployedHash:        "kcm-hash",
 					Conditions:              []metav1.Condition{healthCondition},
 				}}
 				Expect(cl.Status().Update(ctx, &serviceSet)).To(Succeed())
 			})
 
+			// the provider echoes status it read before kcm's last write
 			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
 				return provider.DeployServicesResult{
 					ObservedGeneration: req.Generation,
@@ -218,7 +220,7 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 						Template:         "svc-template",
 						Type:             provider.ServiceStateTypeHelm,
 						State:            provider.ServiceStateStateDeployed,
-						Version:          new("1.0.0"),
+						Version:          new("0.8.0"),
 						LastDeployedHash: new("adapter-hash"),
 					}},
 				}, nil
@@ -257,11 +259,53 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 					HaveField("Name", "svc"),
 					HaveField("State", kcmv1.ServiceStateDeployed),
 					HaveField("Type", kcmv1.ServiceTypeHelm),
-					HaveField("Version", "1.0.0"),
+					HaveField("Version", "0.9.0"),
 					HaveField("LastDeployedHash", "kcm-hash"),
 					HaveField("Conditions", ConsistOf(HaveField("Type", healthCondition.Type))),
 				))),
 			))
+		})
+
+		It("should take the version of non-Helm services from the provider", func() {
+			registerProvider(registryserver.StateActive)
+			createKubeconfigSecret()
+
+			serviceSet.Spec.Services = []kcmv1.ServiceWithValues{
+				{Name: "kust", Namespace: namespace.Name, Template: "kust-template", Version: "1.0.0"},
+			}
+			Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+			serviceSet.Status.Services = []kcmv1.ServiceState{{
+				Name:                    "kust",
+				Namespace:               namespace.Name,
+				Template:                "kust-template",
+				Type:                    kcmv1.ServiceTypeKustomize,
+				State:                   kcmv1.ServiceStateDeployed,
+				LastStateTransitionTime: new(metav1.Now()),
+				Version:                 "0.9.0",
+			}}
+			Expect(cl.Status().Update(ctx, &serviceSet)).To(Succeed())
+
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation,
+					Applied:            true,
+					Collected:          true,
+					Services: []provider.ServiceState{{
+						Name:      "kust",
+						Namespace: namespace.Name,
+						Template:  "kust-template",
+						Type:      provider.ServiceStateTypeKustomize,
+						State:     provider.ServiceStateStateDeployed,
+						Version:   new("1.0.0"),
+					}},
+				}, nil
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(HaveField("Status.Services", ConsistOf(
+				HaveField("Version", "1.0.0"),
+			)))
 		})
 	})
 
