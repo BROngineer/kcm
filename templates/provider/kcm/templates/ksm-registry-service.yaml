@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kcm.ksm.registryServiceName" . }}
+  labels:
+  {{- include "kcm.labels" . | nindent 4 }}
+spec:
+  selector:
+    control-plane: {{ include "kcm.fullname" . }}-controller-manager
+  ports:
+    - name: {{ include "kcm.ksm.registryPortName" . }}
+      port: {{ .Values.ksm.registry.port }}
+      targetPort: {{ include "kcm.ksm.registryPortName" . }}

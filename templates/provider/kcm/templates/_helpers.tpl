@@ -95,6 +95,35 @@ The name of the webhook port. Must be no more than 15 characters
 kcm-webhook
 {{- end }}
 
+{{/*
+The name of the state management provider registry Service and its port (no more than 15 characters)
+*/}}
+{{- define "kcm.ksm.registryServiceName" -}}
+{{ include "kcm.fullname" . }}-ksm-registry
+{{- end }}
+
+{{- define "kcm.ksm.registryPortName" -}}
+ksm-registry
+{{- end }}
+
+{{/*
+The URL providers reach the registry at; kcm hands it to the adapter it installs
+*/}}
+{{- define "kcm.ksm.registryURL" -}}
+{{ ternary "http" "https" .Values.ksm.registry.insecure }}://{{ include "kcm.ksm.registryServiceName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.ksm.registry.port }}
+{{- end }}
+
+{{/*
+The registry serving certificate and its CA, issued only when the registry serves TLS
+*/}}
+{{- define "kcm.ksm.registryCertName" -}}
+{{ include "kcm.fullname" . }}-ksm-registry-tls
+{{- end }}
+
+{{- define "kcm.ksm.registryCAName" -}}
+{{ include "kcm.fullname" . }}-ksm-registry-ca
+{{- end }}
+
 {{- define "rbac.editorVerbs" -}}
 - create
 - delete

@@ -1,0 +1,108 @@
+suite: State management provider registry rendering
+templates:
+  - templates/deployment.yaml
+  - templates/ksm-registry-service.yaml
+  - templates/ksm-registry-certificates.yaml
+release:
+  name: kcm
+  namespace: kcm-system
+
+tests:
+  - it: "defaults -> registry served over plain HTTP and the Sveltos adapter allowed"
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-registry-insecure=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-registry-url=http://kcm-ksm-registry.kcm-system.svc:8443
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-allowed-provider=ksm-projectsveltos=projectsveltos/ksm-provider-sveltos
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: ksm-registry-tls
+          any: true
+
+  - it: "defaults -> kcm presents a token with the provider audience"
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ksm-provider-token
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: ksm-provider
+                    expirationSeconds: 3600
+                    path: token
+
+  - it: "defaults -> no certificates are issued"
+    template: templates/ksm-registry-certificates.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "defaults -> the registry Service targets the registry port"
+    template: templates/ksm-registry-service.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: kcm-ksm-registry
+      - equal:
+          path: spec.ports[0].port
+          value: 8443
+
+  - it: "TLS -> the serving certificate is mounted and the URL uses https"
+    template: templates/deployment.yaml
+    set:
+      ksm.registry.insecure: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-registry-url=https://kcm-ksm-registry.kcm-system.svc:8443
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: ksm-registry-tls
+            secret:
+              defaultMode: 420
+              secretName: kcm-ksm-registry-tls
+
+  - it: "TLS -> a CA chain issues the serving certificate"
+    template: templates/ksm-registry-certificates.yaml
+    set:
+      ksm.registry.insecure: false
+    asserts:
+      - hasDocuments:
+          count: 4
+      - equal:
+          path: spec.isCA
+          value: true
+        documentIndex: 1
+      - equal:
+          path: spec.issuerRef.name
+          value: kcm-ksm-registry-ca
+        documentIndex: 3
+
+  - it: "several providers -> one allow-list flag each"
+    template: templates/deployment.yaml
+    set:
+      ksm.providers:
+        - name: a
+          serviceAccount: ns-a/sa-a
+        - name: b
+          serviceAccount: ns-b/sa-b
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-allowed-provider=a=ns-a/sa-a
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-allowed-provider=b=ns-b/sa-b
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --ksm-allowed-provider=ksm-projectsveltos=projectsveltos/ksm-provider-sveltos

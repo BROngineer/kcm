@@ -11,6 +11,15 @@ proxy: # @schema description: Proxy settings; type: object
 
 enableProvidersReload: null # @schema description: Enable automatic reload-triggering patches for CAPI provider Deployments; type: [boolean, null]
 
+ksm: # @schema description: State management providers integration; type: object
+  registry: # @schema description: Registry state management providers register with; type: object
+    port: 8443 # @schema type: integer; minimum: 1; maximum: 65535; description: Port the registry listens on
+    insecure: true # @schema type: boolean; description: Serve the registry and talk to providers over plain HTTP, without certificates. Testing and demos only. When false, cert-manager issues the registry certificate
+  providers: # @schema type: array; description: Providers allowed to register, each as a provider name and the namespace/name of the ServiceAccount it registers with
+    - name: ksm-projectsveltos
+      serviceAccount: projectsveltos/ksm-provider-sveltos
+  maxProviderTimeout: "30s" # @schema type: string; description: Upper bound for a single call to a provider
+
 controller:
   templatesRepoURL: "oci://ghcr.io/k0rdent/kcm/charts"
   globalRegistry: ""
@@ -30,8 +39,6 @@ controller:
   priorityClassName: "" # @schema type: string; description: Name of the PriorityClass to assign to the pod for scheduling and preemption
   topologySpreadConstraints: [] # @schema type: array; description: Topology spread constraints for pod scheduling
   validateClusterUpgradePath: true # @schema type: boolean; description: Specifies whether the ClusterDeployment upgrade path should be validated
-  enableSveltosCtrl: true # @schema type: boolean; description: Enables built-in ServiceSet controller to reconcile ProjectSveltos objects
-  enableSveltosExpiredCtrl: false # @schema type: boolean; description: Enables SveltosCluster controller, updating stuck (expired) sveltos management cluster kubeconfig tokens
   enableInPlaceUpdates: false # @schema type: boolean; description: Enables Cluster API in-place updates (experimental) in the cluster-api and k0smotron providers. Might be overridden per provider with the inPlaceUpdates.enabled value. Disabling removes the k0smotron extension webhook, so do it only when no clusters use the InPlace update strategy or are being updated
   defaultHelmTimeout: "" # @schema type: string; description: Specifies the timeout duration for Helm install or upgrade operations. If unset, Flux’s default value will be used
   capiClusterPollInterval: "1m" # @schema type: string; description: Polling interval for the periodic CAPI Cluster status check used by the ClusterDeployment controller. Set to "0" to disable the poller

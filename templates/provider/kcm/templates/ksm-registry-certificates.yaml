@@ -1,0 +1,54 @@
+{{- if not .Values.ksm.registry.insecure }}
+{{- /*
+A dedicated CA signs the serving certificate: providers copy the CA's ca.crt to verify the registry,
+and it stays valid when cert-manager renews the serving certificate.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "kcm.ksm.registryCAName" . }}-selfsigned
+  labels:
+  {{- include "kcm.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "kcm.ksm.registryCAName" . }}
+  labels:
+  {{- include "kcm.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ include "kcm.ksm.registryCAName" . }}
+  duration: 87600h
+  secretName: {{ include "kcm.ksm.registryCAName" . }}
+  issuerRef:
+    kind: Issuer
+    name: {{ include "kcm.ksm.registryCAName" . }}-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "kcm.ksm.registryCAName" . }}
+  labels:
+  {{- include "kcm.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "kcm.ksm.registryCAName" . }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "kcm.ksm.registryCertName" . }}
+  labels:
+  {{- include "kcm.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ include "kcm.ksm.registryServiceName" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "kcm.ksm.registryServiceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.kubernetesClusterDomain }}
+  secretName: {{ include "kcm.ksm.registryCertName" . }}
+  issuerRef:
+    kind: Issuer
+    name: {{ include "kcm.ksm.registryCAName" . }}
+{{- end }}

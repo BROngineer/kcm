@@ -66,6 +66,13 @@ spec:
         {{- end }}
         - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles }}
         - --flux-enabled={{ .Values.flux2.enabled }}
+        - --ksm-registry-bind-address=:{{ .Values.ksm.registry.port }}
+        - --ksm-registry-url={{ include "kcm.ksm.registryURL" . }}
+        - --ksm-registry-insecure={{ .Values.ksm.registry.insecure }}
+        {{- range .Values.ksm.providers }}
+        - --ksm-allowed-provider={{ .name }}={{ .serviceAccount }}
+        {{- end }}
+        - --ksm-max-provider-timeout={{ .Values.ksm.maxProviderTimeout }}
         command:
         - /manager
         env:
@@ -94,8 +101,11 @@ spec:
         {{- .Values.image.repository }}
         {{- end }}:{{ .Values.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.image.pullPolicy  | quote }}
-        {{- if .Values.admissionWebhook.enabled }}
         ports:
+        - containerPort: {{ .Values.ksm.registry.port }}
+          name: {{ include "kcm.ksm.registryPortName" . }}
+          protocol: TCP
+        {{- if .Values.admissionWebhook.enabled }}
         - containerPort: {{ .Values.admissionWebhook.port }}
           name: {{ include "kcm.webhook.portName" . }}
           protocol: TCP
@@ -115,12 +125,20 @@ spec:
           periodSeconds: 10
         resources: {{ toYaml .Values.resources | nindent 10 }}
         securityContext: {{ toYaml .Values.containerSecurityContext | nindent 10 }}
-        {{- if .Values.admissionWebhook.enabled }}
         volumeMounts:
+          - mountPath: /var/run/secrets/ksm/provider
+            name: ksm-provider-token
+            readOnly: true
+          {{- if not .Values.ksm.registry.insecure }}
+          - mountPath: /etc/ksm-registry/tls
+            name: ksm-registry-tls
+            readOnly: true
+          {{- end }}
+          {{- if .Values.admissionWebhook.enabled }}
           - mountPath: {{ .Values.admissionWebhook.certDir  | quote }}
             name: cert
             readOnly: true
-        {{- end }}
+          {{- end }}
       {{- with .Values.controller.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
       {{- end }}
@@ -146,10 +164,24 @@ spec:
       {{- else if .Values.imagePullSecrets }}
       imagePullSecrets: {{ toYaml .Values.imagePullSecrets | nindent 8 }}
       {{- end }}
-      {{- if .Values.admissionWebhook.enabled }}
       volumes:
+        - name: ksm-provider-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  # auth.ProviderAudience in ksm-provider-api.
+                  audience: ksm-provider
+                  expirationSeconds: 3600
+                  path: token
+        {{- if not .Values.ksm.registry.insecure }}
+        - name: ksm-registry-tls
+          secret:
+            defaultMode: 420
+            secretName: {{ include "kcm.ksm.registryCertName" . }}
+        {{- end }}
+        {{- if .Values.admissionWebhook.enabled }}
         - name: cert
           secret:
             defaultMode: 420
             secretName: {{ include "kcm.webhook.certName" . }}
-      {{- end }}
+        {{- end }}

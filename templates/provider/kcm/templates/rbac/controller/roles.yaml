@@ -331,6 +331,13 @@ rules:
   resources:
   - events
   verbs: {{ include "rbac.editorVerbs" . | nindent 2 }}
+# state management provider registry authenticates providers
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
 # managementbackups-ctrl
 - apiGroups:
   - k0rdent.mirantis.com
