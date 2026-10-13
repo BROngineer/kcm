@@ -28,7 +28,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -44,8 +43,6 @@ import (
 	ratelimitutil "github.com/K0rdent/kcm/internal/util/ratelimit"
 	schemeutil "github.com/K0rdent/kcm/internal/util/scheme"
 )
-
-var errNotImplemented = errors.New("not implemented")
 
 // ServiceSetReconciler reconciles a ServiceSet object by delegating
 // deployment of its services to the state management provider.
@@ -94,19 +91,8 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.Update(ctx, serviceSet)
 	}
 
-	smp := new(kcmv1.StateManagementProvider)
-	if err = r.Get(ctx, client.ObjectKey{Name: serviceSet.Spec.Provider.Name}, smp); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	continueReconciliation, err := labelsMatchSelector(serviceSet.Labels, smp.Spec.Selector)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to check ServiceSet labels: %w", err)
-	}
-	if !continueReconciliation {
-		l.V(1).Info("ServiceSet labels do not match provider selector, skipping")
-		return ctrl.Result{}, nil
-	}
+	providerName := serviceSet.Spec.Provider.Name
+	entry, registered := r.Registry.Lookup(providerName)
 
 	clone := serviceSet.DeepCopy()
 	defer func() {
@@ -131,31 +117,33 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	serviceSet.Status.Cluster = clusterReference(serviceSet)
 	serviceSet.Status.Provider = kcmv1.ProviderState{
-		Ready:     smp.Status.Ready,
-		Suspended: smp.Spec.Suspend,
+		Ready:     registered && entry.State == registryserver.StateActive,
+		Suspended: registered && entry.State == registryserver.StateSuspended,
 	}
-	if !smp.Status.Ready {
+	// the condition was owned by the in-tree Sveltos adapter, ProviderApplied replaces it.
+	apimeta.RemoveStatusCondition(&serviceSet.Status.Conditions, kcmv1.ServiceSetProfileCondition)
+	if !registered {
 		// we'll emit StateManagementProviderNotReadyEvent
 		// only in case the previous observed state was "ready".
 		if clone.Status.Provider.Ready {
-			record.Eventf(serviceSet, smp, kcmv1.StateManagementProviderNotReadyEvent, kcmv1.ServiceSetReconcileEventAction,
-				"StateManagementProvider %s not ready, skipping ServiceSet %s reconciliation", smp.Name, serviceSet.Name)
+			record.Eventf(serviceSet, nil, kcmv1.StateManagementProviderNotReadyEvent, kcmv1.ServiceSetReconcileEventAction,
+				"StateManagementProvider %s not ready, skipping ServiceSet %s reconciliation", providerName, serviceSet.Name)
 		}
-		l.Info("StateManagementProvider is not ready, skipping", "provider", serviceSet.Spec.Provider)
+		l.Info("StateManagementProvider is not registered, skipping", "provider", serviceSet.Spec.Provider)
 		return ctrl.Result{}, nil
 	}
-	if smp.Spec.Suspend {
+	if serviceSet.Status.Provider.Suspended {
 		// we'll emit StateManagementProviderSuspendedEvent
 		// only in case the previous observed state was not "suspended".
 		if !clone.Status.Provider.Suspended {
-			record.Eventf(serviceSet, smp, kcmv1.StateManagementProviderSuspendedEvent, kcmv1.ServiceSetReconcileEventAction,
-				"StateManagementProvider %s suspended, skipping ServiceSet %s reconciliation", smp.Name, serviceSet.Name)
+			record.Eventf(serviceSet, nil, kcmv1.StateManagementProviderSuspendedEvent, kcmv1.ServiceSetReconcileEventAction,
+				"StateManagementProvider %s suspended, skipping ServiceSet %s reconciliation", providerName, serviceSet.Name)
 		}
 		l.Info("StateManagementProvider is suspended, skipping", "provider", serviceSet.Spec.Provider)
 		return ctrl.Result{}, nil
 	}
 
-	serviceHashes, err := r.deployServices(ctx, rgnClient, registryserver.Entry{}, serviceSet)
+	serviceHashes, err := r.deployServices(ctx, rgnClient, entry, serviceSet)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -499,17 +487,30 @@ func fillNotDeployedServices(serviceSet *kcmv1.ServiceSet, now func() time.Time)
 	}
 }
 
-// labelsMatchSelector returns true if the labels of the ServiceSet match the selector.
-func labelsMatchSelector(serviceSetLabels map[string]string, selector *metav1.LabelSelector) (bool, error) {
-	if selector == nil {
-		return true, nil
+// conditionStatusChangedToFalse returns true if the condition status changed to False
+// while previous observed condition status was equal to True or was not defined.
+func conditionStatusChangedToFalse(conditionOldState, conditionNewState *metav1.Condition) bool {
+	if conditionOldState == nil && conditionNewState == nil {
+		return false
 	}
+	if conditionOldState == nil && conditionNewState.Status == metav1.ConditionFalse {
+		return true
+	}
+	return conditionOldState != nil && conditionNewState != nil && conditionOldState.Status != conditionNewState.Status &&
+		conditionNewState.Status == metav1.ConditionFalse
+}
 
-	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
-	if err != nil {
-		return false, fmt.Errorf("failed to convert LabelSelector to Selector: %w", err)
+func conditionReasonChanged(conditionOldState, conditionNewState *metav1.Condition) bool {
+	if conditionOldState == nil && conditionNewState == nil {
+		return false
 	}
-	return labelSelector.Matches(labels.Set(serviceSetLabels)), nil
+	if conditionNewState == nil {
+		return false
+	}
+	if conditionOldState == nil {
+		return true
+	}
+	return conditionOldState.Reason != conditionNewState.Reason
 }
 
 // findCondition finds the condition of the given type in the ServiceSet.

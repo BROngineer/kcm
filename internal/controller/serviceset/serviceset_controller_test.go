@@ -195,13 +195,14 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 					LastTransitionTime: metav1.Now(),
 				}}
 				serviceSet.Status.Services = []kcmv1.ServiceState{{
-					Name:             "svc",
-					Namespace:        namespace.Name,
-					Template:         "svc-template",
-					Type:             kcmv1.ServiceTypeHelm,
-					State:            kcmv1.ServiceStateProvisioning,
-					LastDeployedHash: "kcm-hash",
-					Conditions:       []metav1.Condition{healthCondition},
+					Name:                    "svc",
+					Namespace:               namespace.Name,
+					Template:                "svc-template",
+					Type:                    kcmv1.ServiceTypeHelm,
+					State:                   kcmv1.ServiceStateProvisioning,
+					LastStateTransitionTime: new(metav1.Now()),
+					LastDeployedHash:        "kcm-hash",
+					Conditions:              []metav1.Condition{healthCondition},
 				}}
 				Expect(cl.Status().Update(ctx, &serviceSet)).To(Succeed())
 			})
