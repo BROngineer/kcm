@@ -5,5 +5,8 @@ dependencies:
 - name: projectsveltos
   repository: https://projectsveltos.github.io/helm-charts
   version: 1.16.0
-digest: sha256:17339a40a1f13ba13ccaa2f771fb430569b5fe7545bfef7ae245bb285ab815dc
-generated: "2026-10-06T11:25:55.464025592Z"
+- name: ksm-provider-sveltos
+  repository: oci://ghcr.io/brongineer/charts
+  version: 0.1.2
+digest: sha256:e630267087873f8a43d5afa83a37656d6b0a32de169c17f45a8693f9f01d4823
+generated: "2026-10-13T21:33:57.778493+01:00"
