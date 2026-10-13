@@ -6,7 +6,7 @@ metadata:
     k0rdent.mirantis.com/aggregate-to-manager: "true"
   {{- include "kcm.labels" . | nindent 4 }}
 # Read-only access used by the sveltos adapter's on-cluster service state
-# verifier (internal/controller/adapters/sveltos/verify.go) to list resources
+# verifier (internal/controller/serviceset/verify.go) to list resources
 # sveltos deployed via helm and evaluate their health against embedded rules.
 rules:
 - apiGroups:

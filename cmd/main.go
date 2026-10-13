@@ -36,9 +36,9 @@ import (
 	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
 	"github.com/K0rdent/kcm/internal/build"
 	"github.com/K0rdent/kcm/internal/controller"
-	"github.com/K0rdent/kcm/internal/controller/adapters/sveltos"
 	"github.com/K0rdent/kcm/internal/controller/ipam"
 	"github.com/K0rdent/kcm/internal/controller/region"
+	"github.com/K0rdent/kcm/internal/controller/serviceset"
 	"github.com/K0rdent/kcm/internal/controller/statemanagementprovider"
 	"github.com/K0rdent/kcm/internal/helm"
 	"github.com/K0rdent/kcm/internal/record"
@@ -477,7 +477,7 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		deploymentName := os.Getenv("KCM_NAME")
 
 		setupLog.Info("setting up built-in ServiceSet controller")
-		if err = (&sveltos.ServiceSetReconciler{
+		if err = (&serviceset.ServiceSetReconciler{
 			SystemNamespace:         currentNamespace,
 			AdapterName:             deploymentName,
 			AdapterNamespace:        currentNamespace,
@@ -490,7 +490,7 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 	}
 
 	if cfg.enableSveltosExpireCtrl {
-		if err = (&sveltos.ClusterReconciler{
+		if err = (&serviceset.ClusterReconciler{
 			Client: mgr.GetClient(),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "SveltosCluster")
