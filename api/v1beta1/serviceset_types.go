@@ -59,6 +59,16 @@ const (
 	// ServiceSetProfileReadyMessage is the message for the profile is ready
 	ServiceSetProfileReadyMessage = "Profile is ready"
 
+	// ServiceSetProviderAppliedCondition is the condition type for services applied by the state management provider.
+	// When False, the reason is the one reported by the provider.
+	ServiceSetProviderAppliedCondition = "ProviderApplied"
+	// ServiceSetProviderAppliedReason is the reason for the services applied by the provider
+	ServiceSetProviderAppliedReason = "Applied"
+	// ServiceSetProviderAppliedMessage is the message for the services applied by the provider
+	ServiceSetProviderAppliedMessage = "Services applied by the provider"
+	// ServiceSetProviderNotAppliedMessage is the message for the services not applied when the provider gave no details
+	ServiceSetProviderNotAppliedMessage = "Services not applied by the provider"
+
 	// ServiceSetStatusesCollectedCondition is the condition type for ServiceSet statuses collection
 	ServiceSetStatusesCollectedCondition = "ServiceSetStatusesCollected"
 	// ServiceSetStatusesCollectedReason is the reason for the statuses collection is ready
@@ -95,7 +105,12 @@ const (
 	ServiceSetCollectServiceStatusesSuccessEvent = "ServiceSetCollectServiceStatusesSuccess"
 	// ServiceSetCollectServiceStatusesFailedEvent indicates the event for services status collection failed
 	ServiceSetCollectServiceStatusesFailedEvent = "ServiceSetCollectServiceStatusesFailed"
+	// ServiceSetProviderApplyFailedEvent indicates the event for services not applied by the provider
+	ServiceSetProviderApplyFailedEvent = "ServiceSetProviderApplyFailed"
+	// ServiceSetProviderApplySuccessEvent indicates the event for services applied by the provider
+	ServiceSetProviderApplySuccessEvent = "ServiceSetProviderApplySuccess"
 
+	ServiceSetApplyServicesEventAction          = "ApplyServices"
 	ServiceSetReconcileEventAction              = "Reconcile"
 	ServiceSetEnsureProfileEventAction          = "EnsureProfile"
 	ServiceSetBuildProfileEventAction           = "BuildProfile"
