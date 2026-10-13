@@ -21,18 +21,21 @@ import (
 	"slices"
 	"time"
 
+	registryserver "github.com/brongineer/ksm-provider-api/registry/server"
 	libsveltosv1beta1 "github.com/projectsveltos/libsveltos/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
 	"github.com/K0rdent/kcm/internal/record"
@@ -49,15 +52,14 @@ var errNotImplemented = errors.New("not implemented")
 type ServiceSetReconciler struct {
 	client.Client
 
+	Registry          ProviderRegistry
+	NewProviderClient ProviderClientFactory
+	// Transitions carries provider registry transitions; the object name is the provider name.
+	Transitions <-chan event.GenericEvent
+
 	timeFunc func() time.Time
 
 	SystemNamespace string
-
-	// AdapterName is the name of the workload running the controller
-	// effectively this name is used to identify adapter in the
-	// [github.com/k0rdent/kcm/api/v1beta1.StateManagementProvider] spec.
-	AdapterName      string
-	AdapterNamespace string
 
 	MaxConcurrentReconciles int
 	requeueInterval         time.Duration
@@ -153,7 +155,7 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	serviceHashes, err := r.deployServices(ctx, serviceSet)
+	serviceHashes, err := r.deployServices(ctx, rgnClient, registryserver.Entry{}, serviceSet)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -420,18 +422,6 @@ func (r *ServiceSetReconciler) reconcileDelete(ctx context.Context, serviceSet *
 	return ctrl.Result{}, nil
 }
 
-// deployServices asks the provider to deploy serviceSet and returns
-// the fingerprint of each deployed service.
-func (*ServiceSetReconciler) deployServices(context.Context, *kcmv1.ServiceSet) (map[client.ObjectKey]string, error) {
-	return nil, errNotImplemented
-}
-
-// deleteServices asks the provider to delete serviceSet's services
-// and reports whether they are gone.
-func (*ServiceSetReconciler) deleteServices(context.Context, *kcmv1.ServiceSet) (bool, error) {
-	return false, errNotImplemented
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServiceSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Client = mgr.GetClient()
@@ -440,60 +430,20 @@ func (r *ServiceSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	r.requeueInterval = 10 * time.Second
 
-	return ctrl.NewControllerManagedBy(mgr).
+	// Events are not generation-aware, so no generation predicate: a repeated
+	// notification only updates the count of the existing Event.
+	b := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.TypedOptions[ctrl.Request]{
 			MaxConcurrentReconciles: 10,
 			RateLimiter:             ratelimitutil.DefaultFastSlow(),
 		}).
-		Named("ksm-sveltos-adapter").
-		Watches(&kcmv1.ServiceSet{}, kubeutil.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) ([]ctrl.Request, error) {
-			serviceSet, ok := o.(*kcmv1.ServiceSet)
-			if !ok {
-				return nil, nil
-			}
-			provider := new(kcmv1.StateManagementProvider)
-			if err := r.Get(ctx, client.ObjectKey{Name: serviceSet.Spec.Provider.Name}, provider); err != nil {
-				if apierrors.IsNotFound(err) {
-					return nil, nil
-				}
-				return nil, fmt.Errorf("failed to get StateManagementProvider %s: %w", serviceSet.Spec.Provider.Name, err)
-			}
-			if provider.Spec.Adapter.Name != r.AdapterName ||
-				provider.Spec.Adapter.Namespace != r.AdapterNamespace {
-				return nil, nil
-			}
-			return []ctrl.Request{
-				{
-					Name:      serviceSet.Name,
-					Namespace: serviceSet.Namespace,
-				},
-			}, nil
-		})).
-		Watches(&kcmv1.StateManagementProvider{}, kubeutil.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) ([]ctrl.Request, error) {
-			provider, ok := o.(*kcmv1.StateManagementProvider)
-			if !ok {
-				return nil, nil
-			}
-			if provider.Spec.Adapter.Name != r.AdapterName ||
-				provider.Spec.Adapter.Namespace != r.AdapterNamespace {
-				return nil, nil
-			}
-
-			selector := fields.OneTermEqualSelector(kcmv1.ServiceSetProviderIndexKey, provider.Name)
-			serviceSets := new(kcmv1.ServiceSetList)
-			if err := r.List(ctx, serviceSets, client.MatchingFieldsSelector{Selector: selector}); err != nil {
-				return nil, fmt.Errorf("failed to list ServiceSets for StateManagementProvider %s: %w", provider.Name, err)
-			}
-			requests := make([]ctrl.Request, 0, len(serviceSets.Items))
-			for _, serviceSet := range serviceSets.Items {
-				requests = append(requests, ctrl.Request{
-					Name:      serviceSet.Name,
-					Namespace: serviceSet.Namespace,
-				})
-			}
-			return requests, nil
-		})).
-		Complete(r)
+		Named("serviceset").
+		For(&kcmv1.ServiceSet{}).
+		Watches(&corev1.Event{}, handler.EnqueueRequestsFromMapFunc(requestForEvent))
+	if r.Transitions != nil {
+		b = b.WatchesRawSource(source.Channel(r.Transitions, kubeutil.EnqueueRequestsFromMapFunc(r.requestsForProvider)))
+	}
+	return b.Complete(r)
 }
 
 // updateServicesInReadyStateCondition updates the "ServicesInReadyState" condition.

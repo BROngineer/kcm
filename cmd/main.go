@@ -474,13 +474,9 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		utilruntime.Must(addoncontrollerv1beta1.AddToScheme(scheme))
 		utilruntime.Must(libsveltosv1beta1.AddToScheme(scheme))
 
-		deploymentName := os.Getenv("KCM_NAME")
-
 		setupLog.Info("setting up built-in ServiceSet controller")
 		if err = (&serviceset.ServiceSetReconciler{
 			SystemNamespace:         currentNamespace,
-			AdapterName:             deploymentName,
-			AdapterNamespace:        currentNamespace,
 			MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ServiceSet")

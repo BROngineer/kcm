@@ -15,12 +15,17 @@
 package serviceset
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/brongineer/ksm-provider-api/api/provider"
+	"github.com/brongineer/ksm-provider-api/notify"
+	"github.com/brongineer/ksm-provider-api/providertest"
+	registryserver "github.com/brongineer/ksm-provider-api/registry/server"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	addoncontrollerv1beta1 "github.com/projectsveltos/addon-controller/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -30,54 +35,68 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	clusterapiv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	. "sigs.k8s.io/controller-runtime/pkg/envtest/komega"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
+	"github.com/K0rdent/kcm/internal/serviceset"
 )
 
-const (
-	adapterAPIVersion = "sample-version/v1"
-	adapterKind       = "SampleAdapter"
-	adapterName       = "sample-adapter"
-	adapterNamespace  = "sample-namespace"
-
-	provisionerAPIVersion = "sample-version/v1"
-	provisionerKind       = "SampleProvisioner"
-	provisionerName       = "sample-provisioner"
-	provisionerNamespace  = "sample-namespace"
-
-	provisionerCRDGroup    = "sample-crd-group"
-	provisionerCRDResource = "sample-crd-resources"
-)
-
-var testLabel = map[string]string{"integration-test": "true"}
+const testProviderName = "ksm-test-provider"
 
 var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 	var (
-		reconciler ServiceSetReconciler
+		reconciler   ServiceSetReconciler
+		registry     *registryserver.Registry
+		fakeProvider *providertest.FakeProvider
 
-		namespace               corev1.Namespace
-		credential              kcmv1.Credential
-		clusterDeployment       kcmv1.ClusterDeployment
-		serviceSet              kcmv1.ServiceSet
-		stateManagementProvider kcmv1.StateManagementProvider
+		namespace         corev1.Namespace
+		credential        kcmv1.Credential
+		clusterDeployment kcmv1.ClusterDeployment
+		serviceSet        kcmv1.ServiceSet
 
 		cluster clusterapiv1.Cluster
-
-		profile addoncontrollerv1beta1.Profile
 	)
+
+	registerProvider := func(state registryserver.State) {
+		registry.Register(registryserver.Registration{
+			Name:        testProviderName,
+			Endpoint:    "https://provider.invalid",
+			State:       state,
+			APIVersions: []string{"v1"},
+			TTL:         time.Hour,
+			Timeout:     10 * time.Second,
+		})
+	}
+
+	reconcileServiceSet := func() (ctrl.Result, error) {
+		return reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&serviceSet)})
+	}
+
+	createKubeconfigSecret := func() {
+		kc := &corev1.Secret{
+			Name:      clusterDeployment.Name + "-kubeconfig",
+			Namespace: namespace.Name,
+			Data:      map[string][]byte{"value": kubeconfigForRestConfig(config)},
+		}
+		Expect(cl.Create(ctx, kc)).To(Succeed())
+		DeferCleanup(cl.Delete, kc)
+	}
+
+	removeFinalizer := func() {
+		ss := &kcmv1.ServiceSet{}
+		Expect(cl.Get(ctx, client.ObjectKeyFromObject(&serviceSet), ss)).To(Succeed())
+		ss.Finalizers = nil
+		Expect(cl.Update(ctx, ss)).To(Succeed())
+	}
 
 	BeforeEach(func() {
 		By("creating a namespace", func() {
 			namespace = corev1.Namespace{GenerateName: "namespace-test-"}
 			Expect(cl.Create(ctx, &namespace)).To(Succeed())
-		})
-
-		By("creating a StateManagementProvider", func() {
-			stateManagementProvider = prepareStateManagementProvider()
-			Expect(cl.Create(ctx, &stateManagementProvider)).To(Succeed())
 		})
 
 		By("creating a Credential", func() {
@@ -96,15 +115,21 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 		})
 
 		By("creating a ServiceSet", func() {
-			serviceSet = prepareServiceSet(namespace.Name, stateManagementProvider.Name, clusterDeployment.Name)
+			serviceSet = prepareServiceSet(namespace.Name, testProviderName, clusterDeployment.Name)
 			Expect(cl.Create(ctx, &serviceSet)).To(Succeed())
 		})
 
 		By("creating reconciler", func() {
+			registry = registryserver.NewRegistry()
+			fakeProvider = &providertest.FakeProvider{}
 			reconciler = ServiceSetReconciler{
 				Client:          cl,
 				timeFunc:        func() time.Time { return time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC) },
 				requeueInterval: 1 * time.Second,
+				Registry:        registry,
+				NewProviderClient: func(registryserver.Entry) (ProviderClient, error) {
+					return fakeProvider, nil
+				},
 			}
 		})
 	})
@@ -113,68 +138,267 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 		Expect(client.IgnoreNotFound(cl.Delete(ctx, &serviceSet))).To(Succeed())
 		Expect(client.IgnoreNotFound(cl.Delete(ctx, &clusterDeployment))).To(Succeed())
 		Expect(client.IgnoreNotFound(cl.Delete(ctx, &credential))).To(Succeed())
-		Expect(client.IgnoreNotFound(cl.Delete(ctx, &stateManagementProvider))).To(Succeed())
 		Expect(client.IgnoreNotFound(cl.Delete(ctx, &namespace))).To(Succeed())
 	})
 
-	Context("When StateManagementProvider is not ready", func() {
+	Context("When the provider is not registered", func() {
 		It("should only update the status of the ServiceSet", func() {
-			By("checking the StateManagementProvider is not ready", func() {
-				Expect(Object(&stateManagementProvider)()).Should(SatisfyAll(
-					HaveField("Status.Ready", BeFalse()),
-				))
-			})
-
-			By("reconciling the ServiceSet", func() {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&serviceSet)})
-				Expect(err).To(Succeed())
-				Expect(Object(&serviceSet)()).Should(SatisfyAll(
-					HaveField("Status.Provider.Ready", BeFalse()),
-					HaveField("Status.Provider.Suspended", BeFalse()),
-					HaveField("Status.Cluster.APIVersion", kcmv1.GroupVersion.WithKind(kcmv1.ClusterDeploymentKind).GroupVersion().String()),
-					HaveField("Status.Cluster.Kind", kcmv1.ClusterDeploymentKind),
-					HaveField("Status.Cluster.Name", clusterDeployment.Name),
-					HaveField("Status.Cluster.Namespace", clusterDeployment.Namespace),
-				))
-
-				profile = addoncontrollerv1beta1.Profile{}
-				err = cl.Get(ctx, client.ObjectKeyFromObject(&serviceSet), &profile)
-				Expect(err).To(HaveOccurred())
-				Expect(apierrors.IsNotFound(err)).To(BeTrue())
-			})
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Provider.Ready", BeFalse()),
+				HaveField("Status.Provider.Suspended", BeFalse()),
+				HaveField("Status.Cluster.APIVersion", kcmv1.GroupVersion.WithKind(kcmv1.ClusterDeploymentKind).GroupVersion().String()),
+				HaveField("Status.Cluster.Kind", kcmv1.ClusterDeploymentKind),
+				HaveField("Status.Cluster.Name", clusterDeployment.Name),
+				HaveField("Status.Cluster.Namespace", clusterDeployment.Namespace),
+			))
+			Expect(fakeProvider.DeployCalls()).To(BeEmpty())
 		})
 	})
 
-	Context("When StateManagementProvider is suspended", func() {
+	Context("When the provider is suspended", func() {
 		It("should only update the status of the ServiceSet", func() {
-			By("updating the StateManagementProvider to be ready and suspended", func() {
-				stateManagementProvider.Spec.Suspend = true
-				Expect(cl.Update(ctx, &stateManagementProvider)).To(Succeed())
-				stateManagementProvider.Status.Ready = true
-				Expect(cl.Status().Update(ctx, &stateManagementProvider)).To(Succeed())
-				Expect(Object(&stateManagementProvider)()).Should(SatisfyAll(
-					HaveField("Spec.Suspend", BeTrue()),
-					HaveField("Status.Ready", BeTrue()),
-				))
+			registerProvider(registryserver.StateSuspended)
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Provider.Ready", BeFalse()),
+				HaveField("Status.Provider.Suspended", BeTrue()),
+				HaveField("Status.Cluster.Name", clusterDeployment.Name),
+			))
+			Expect(fakeProvider.DeployCalls()).To(BeEmpty())
+		})
+	})
+
+	Context("When the provider applied and collected the services", func() {
+		It("should take the services from the provider and keep kcm-owned fields", func() {
+			registerProvider(registryserver.StateActive)
+			createKubeconfigSecret()
+
+			healthCondition := metav1.Condition{
+				Type:               serviceHealthConditionPrefix + "Deployment",
+				Status:             metav1.ConditionFalse,
+				Reason:             "Unhealthy",
+				LastTransitionTime: metav1.Now(),
+			}
+			By("seeding spec and kcm-owned status", func() {
+				serviceSet.Spec.Services = []kcmv1.ServiceWithValues{
+					{Name: "svc", Namespace: namespace.Name, Template: "svc-template", Version: "1.0.0"},
+				}
+				Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+				serviceSet.Status.Conditions = []metav1.Condition{{
+					Type:               kcmv1.ServiceSetProfileCondition,
+					Status:             metav1.ConditionTrue,
+					Reason:             kcmv1.ServiceSetProfileReadyReason,
+					LastTransitionTime: metav1.Now(),
+				}}
+				serviceSet.Status.Services = []kcmv1.ServiceState{{
+					Name:             "svc",
+					Namespace:        namespace.Name,
+					Template:         "svc-template",
+					Type:             kcmv1.ServiceTypeHelm,
+					State:            kcmv1.ServiceStateProvisioning,
+					LastDeployedHash: "kcm-hash",
+					Conditions:       []metav1.Condition{healthCondition},
+				}}
+				Expect(cl.Status().Update(ctx, &serviceSet)).To(Succeed())
 			})
 
-			By("reconciling the ServiceSet", func() {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&serviceSet)})
-				Expect(err).To(Succeed())
-				Expect(Object(&serviceSet)()).Should(SatisfyAll(
-					HaveField("Status.Provider.Ready", BeTrue()),
-					HaveField("Status.Provider.Suspended", BeTrue()),
-					HaveField("Status.Cluster.APIVersion", kcmv1.GroupVersion.WithKind(kcmv1.ClusterDeploymentKind).GroupVersion().String()),
-					HaveField("Status.Cluster.Kind", kcmv1.ClusterDeploymentKind),
-					HaveField("Status.Cluster.Name", clusterDeployment.Name),
-					HaveField("Status.Cluster.Namespace", clusterDeployment.Namespace),
-				))
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation,
+					Applied:            true,
+					Collected:          true,
+					Services: []provider.ServiceState{{
+						Name:             "svc",
+						Namespace:        namespace.Name,
+						Template:         "svc-template",
+						Type:             provider.ServiceStateTypeHelm,
+						State:            provider.ServiceStateStateDeployed,
+						Version:          new("1.0.0"),
+						LastDeployedHash: new("adapter-hash"),
+					}},
+				}, nil
+			}
 
-				profile = addoncontrollerv1beta1.Profile{}
-				err = cl.Get(ctx, client.ObjectKeyFromObject(&serviceSet), &profile)
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+
+			Expect(fakeProvider.DeployCalls()).To(ConsistOf(provider.DeployServicesRequest{
+				Name:       serviceSet.Name,
+				Namespace:  serviceSet.Namespace,
+				Generation: serviceSet.Generation,
+			}))
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Provider.Ready", BeTrue()),
+				HaveField("Status.Provider.Suspended", BeFalse()),
+				HaveField("Status.Deployed", BeTrue()),
+				HaveField("Status.Conditions", SatisfyAll(
+					ContainElement(SatisfyAll(
+						HaveField("Type", kcmv1.ServiceSetProviderAppliedCondition),
+						HaveField("Status", metav1.ConditionTrue),
+						HaveField("Reason", kcmv1.ServiceSetProviderAppliedReason),
+					)),
+					ContainElement(SatisfyAll(
+						HaveField("Type", kcmv1.ServiceSetStatusesCollectedCondition),
+						HaveField("Status", metav1.ConditionTrue),
+					)),
+					ContainElement(SatisfyAll(
+						HaveField("Type", kcmv1.ServicesInReadyStateCondition),
+						HaveField("Status", metav1.ConditionTrue),
+						HaveField("Message", "1/1"),
+					)),
+					Not(ContainElement(HaveField("Type", kcmv1.ServiceSetProfileCondition))),
+				)),
+				HaveField("Status.Services", ConsistOf(SatisfyAll(
+					HaveField("Name", "svc"),
+					HaveField("State", kcmv1.ServiceStateDeployed),
+					HaveField("Type", kcmv1.ServiceTypeHelm),
+					HaveField("Version", "1.0.0"),
+					HaveField("LastDeployedHash", "kcm-hash"),
+					HaveField("Conditions", ConsistOf(HaveField("Type", healthCondition.Type))),
+				))),
+			))
+		})
+	})
+
+	Context("When the provider did not apply the services", func() {
+		DescribeTable("should surface the provider reason and fail the reconcile",
+			func(reason provider.DeployServicesResultReason, message *string, wantMessage string) {
+				registerProvider(registryserver.StateActive)
+				fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+					return provider.DeployServicesResult{
+						ObservedGeneration: req.Generation,
+						Reason:             &reason,
+						Message:            message,
+						Services:           []provider.ServiceState{},
+					}, nil
+				}
+
+				_, err := reconcileServiceSet()
 				Expect(err).To(HaveOccurred())
-				Expect(apierrors.IsNotFound(err)).To(BeTrue())
-			})
+				Expect(Object(&serviceSet)()).Should(HaveField("Status.Conditions", ContainElement(SatisfyAll(
+					HaveField("Type", kcmv1.ServiceSetProviderAppliedCondition),
+					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Reason", string(reason)),
+					HaveField("Message", wantMessage),
+				))))
+			},
+			Entry("invalid input", provider.DeployServicesResultReasonInvalidInput, new("bad config"), "bad config"),
+			Entry("source unavailable", provider.DeployServicesResultReasonSourceUnavailable, new("no chart"), "no chart"),
+			Entry("provider error", provider.DeployServicesResultReasonProviderError, new("boom"), "boom"),
+			Entry("target unreachable", provider.DeployServicesResultReasonTargetUnreachable, new("no route"), "no route"),
+			Entry("no message", provider.DeployServicesResultReasonProviderError, nil, kcmv1.ServiceSetProviderNotAppliedMessage),
+		)
+	})
+
+	Context("When the provider did not collect the statuses", func() {
+		It("should mark statuses not collected and fail the reconcile", func() {
+			registerProvider(registryserver.StateActive)
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation,
+					Applied:            true,
+					CollectMessage:     new("no summary"),
+					Services:           []provider.ServiceState{},
+				}, nil
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(HaveOccurred())
+			Expect(Object(&serviceSet)()).Should(HaveField("Status.Conditions", SatisfyAll(
+				ContainElement(SatisfyAll(
+					HaveField("Type", kcmv1.ServiceSetProviderAppliedCondition),
+					HaveField("Status", metav1.ConditionTrue),
+				)),
+				ContainElement(SatisfyAll(
+					HaveField("Type", kcmv1.ServiceSetStatusesCollectedCondition),
+					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Reason", kcmv1.ServiceSetStatusesNotCollectedReason),
+				)),
+			)))
+		})
+	})
+
+	Context("When the provider answered for an older generation", func() {
+		It("should discard the result and fail the reconcile", func() {
+			registerProvider(registryserver.StateActive)
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation - 1,
+					Applied:            true,
+					Collected:          true,
+					Services: []provider.ServiceState{{
+						Name: "svc", Namespace: namespace.Name, Template: "t",
+						Type: provider.ServiceStateTypeHelm, State: provider.ServiceStateStateDeployed,
+					}},
+				}, nil
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(HaveOccurred())
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Services", BeEmpty()),
+				HaveField("Status.Conditions", Not(ContainElement(HaveField("Type", kcmv1.ServiceSetProviderAppliedCondition)))),
+			))
+		})
+	})
+
+	Context("When the provider call fails", func() {
+		It("should keep the status and fail the reconcile", func() {
+			registerProvider(registryserver.StateActive)
+			fakeProvider.DeployFunc = func(context.Context, provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{}, errors.New("connection refused")
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(MatchError(ContainSubstring("connection refused")))
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Provider.Ready", BeTrue()),
+				HaveField("Status.Conditions", Not(ContainElement(HaveField("Type", kcmv1.ServiceSetProviderAppliedCondition)))),
+			))
+		})
+	})
+
+	Context("When the target cluster is missing", func() {
+		It("should not report the ServiceSet as deployed", func() {
+			registerProvider(registryserver.StateActive)
+			serviceSet.Spec.Services = []kcmv1.ServiceWithValues{{Name: "svc", Namespace: namespace.Name, Template: "t"}}
+			Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation,
+					Applied:            true,
+					Collected:          true,
+					Services: []provider.ServiceState{{
+						Name: "svc", Namespace: namespace.Name, Template: "t",
+						Type: provider.ServiceStateTypeHelm, State: provider.ServiceStateStateDeployed,
+					}},
+				}, nil
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(HaveField("Status.Deployed", BeFalse()))
+		})
+	})
+
+	Context("When the ServiceSet manages the management cluster", func() {
+		It("should reference the management cluster in the status", func() {
+			registerProvider(registryserver.StateActive)
+			serviceSet.Spec.Cluster = ""
+			serviceSet.Spec.MultiClusterService = "sample-multiclusterservice"
+			serviceSet.Spec.Provider.SelfManagement = true
+			Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(SatisfyAll(
+				HaveField("Status.Cluster", Equal(serviceset.SelfManagementClusterReference())),
+				HaveField("Status.Deployed", BeTrue()),
+			))
 		})
 	})
 
@@ -192,11 +416,10 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 			noFinalizerSS := kcmv1.ServiceSet{
 				GenerateName: "ss-no-fin-",
 				Namespace:    namespace.Name,
-				Labels:       testLabel,
 				Spec: kcmv1.ServiceSetSpec{
 					Cluster: clusterDeployment.Name,
 					Provider: kcmv1.StateManagementProviderConfig{
-						Name: stateManagementProvider.Name,
+						Name: testProviderName,
 					},
 				},
 			}
@@ -215,33 +438,10 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 		})
 	})
 
-	Context("When ServiceSet labels do not match the StateManagementProvider selector", func() {
-		It("should skip reconciliation without creating a Profile", func() {
-			By("marking StateManagementProvider as ready", func() {
-				stateManagementProvider.Status.Ready = true
-				Expect(cl.Status().Update(ctx, &stateManagementProvider)).To(Succeed())
-			})
+	Context("When ServiceSet is deleted and the provider removed its services", func() {
+		It("should remove the finalizer and allow object deletion", func() {
+			registerProvider(registryserver.StateActive)
 
-			By("clearing ServiceSet labels so they no longer match the provider selector", func() {
-				serviceSet.Labels = nil
-				Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
-			})
-
-			By("reconciling the ServiceSet", func() {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&serviceSet)})
-				Expect(err).To(Succeed())
-			})
-
-			By("verifying no Profile was created", func() {
-				prof := addoncontrollerv1beta1.Profile{}
-				err := cl.Get(ctx, client.ObjectKeyFromObject(&serviceSet), &prof)
-				Expect(apierrors.IsNotFound(err)).To(BeTrue())
-			})
-		})
-	})
-
-	Context("When ServiceSet is deleted with no Profile and empty service list", func() {
-		PIt("should remove the finalizer and allow object deletion", func() {
 			By("deleting the ServiceSet to trigger reconcileDelete", func() {
 				Expect(cl.Delete(ctx, &serviceSet)).To(Succeed())
 			})
@@ -294,12 +494,90 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 				Expect(ss.Status.Services[0].State).To(Equal(kcmv1.ServiceStateDeleting))
 			})
 
-			By("cleaning up: remove finalizer so AfterEach can delete the ServiceSet", func() {
-				ss := &kcmv1.ServiceSet{}
-				Expect(cl.Get(ctx, client.ObjectKeyFromObject(&serviceSet), ss)).To(Succeed())
-				ss.Finalizers = nil
-				Expect(cl.Update(ctx, ss)).To(Succeed())
-			})
+			By("cleaning up: remove finalizer so AfterEach can delete the ServiceSet", removeFinalizer)
+		})
+	})
+
+	Context("When ServiceSet is deleted while the provider is not registered", func() {
+		It("should keep the finalizer and requeue without calling the provider", func() {
+			Expect(cl.Delete(ctx, &serviceSet)).To(Succeed())
+
+			result, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(result.RequeueAfter).To(Equal(reconciler.requeueInterval))
+			Expect(fakeProvider.DeleteCalls()).To(BeEmpty())
+			Expect(Object(&serviceSet)()).Should(HaveField("Finalizers", ContainElement(kcmv1.ServiceSetFinalizer)))
+
+			removeFinalizer()
+		})
+	})
+
+	Context("When ServiceSet is deleted and the provider is still deleting", func() {
+		It("should keep the finalizer and requeue", func() {
+			registerProvider(registryserver.StateActive)
+			fakeProvider.DeleteFunc = func(context.Context, provider.DeleteServicesRequest) (provider.DeleteServicesResult, error) {
+				return provider.DeleteServicesResult{Done: false}, nil
+			}
+			Expect(cl.Delete(ctx, &serviceSet)).To(Succeed())
+
+			result, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(result.RequeueAfter).To(Equal(reconciler.requeueInterval))
+			Expect(fakeProvider.DeleteCalls()).To(ConsistOf(provider.DeleteServicesRequest{
+				Name:      serviceSet.Name,
+				Namespace: serviceSet.Namespace,
+			}))
+			Expect(Object(&serviceSet)()).Should(HaveField("Finalizers", ContainElement(kcmv1.ServiceSetFinalizer)))
+
+			removeFinalizer()
+		})
+	})
+
+	Context("Watch mapping", func() {
+		It("should enqueue every ServiceSet of a provider on a registry transition", func() {
+			newServiceSet := func(name, providerName string) *kcmv1.ServiceSet {
+				return &kcmv1.ServiceSet{
+					Name:      name,
+					Namespace: namespace.Name,
+					Spec:      kcmv1.ServiceSetSpec{Provider: kcmv1.StateManagementProviderConfig{Name: providerName}},
+				}
+			}
+			indexed := fake.NewClientBuilder().
+				WithScheme(cl.Scheme()).
+				WithIndex(&kcmv1.ServiceSet{}, kcmv1.ServiceSetProviderIndexKey, kcmv1.ExtractServiceSetProvider).
+				WithObjects(
+					newServiceSet("a", testProviderName),
+					newServiceSet("b", testProviderName),
+					newServiceSet("c", "other-provider"),
+				).
+				Build()
+			r := ServiceSetReconciler{Client: indexed}
+
+			requests, err := r.requestsForProvider(ctx, &metav1.PartialObjectMetadata{Name: testProviderName})
+			Expect(err).To(Succeed())
+			Expect(requests).To(ConsistOf(
+				ctrl.Request{Namespace: namespace.Name, Name: "a"},
+				ctrl.Request{Namespace: namespace.Name, Name: "b"},
+			))
+		})
+
+		It("should enqueue the ServiceSet a state-change notification targets", func() {
+			notification := &corev1.Event{
+				Reason: notify.Reason,
+				InvolvedObject: corev1.ObjectReference{
+					APIVersion: kcmv1.GroupVersion.String(),
+					Kind:       kcmv1.ServiceSetKind,
+					Namespace:  "ns",
+					Name:       "ss",
+				},
+			}
+			Expect(requestForEvent(ctx, notification)).To(ConsistOf(
+				ctrl.Request{Namespace: "ns", Name: "ss"},
+			))
+
+			notification.Reason = "SomethingElse"
+			Expect(requestForEvent(ctx, notification)).To(BeEmpty())
+			Expect(requestForEvent(ctx, &corev1.ConfigMap{})).To(BeEmpty())
 		})
 	})
 
@@ -473,54 +751,42 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 			Expect(svc.LastDeployedHash).To(Equal(expectedHash), "hash advances to sveltos-side fingerprint")
 			Expect(svc.Version).To(Equal(specVersion), "version stamps to Spec.Services[i].Version")
 		})
+
+		It("stamps the hash the provider reports through Reconcile", func() {
+			expectedHash := prepareVerifierArtifacts()
+			registerProvider(registryserver.StateActive)
+			serviceSet.Spec.Services = []kcmv1.ServiceWithValues{{
+				Name: releaseName, Namespace: releaseNs, Template: "tmpl", Version: specVersion,
+			}}
+			Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+			fakeProvider.DeployFunc = func(_ context.Context, req provider.DeployServicesRequest) (provider.DeployServicesResult, error) {
+				return provider.DeployServicesResult{
+					ObservedGeneration: req.Generation,
+					Applied:            true,
+					Collected:          true,
+					Services: []provider.ServiceState{{
+						Name: releaseName, Namespace: releaseNs, Template: "tmpl",
+						Type: provider.ServiceStateTypeHelm, State: provider.ServiceStateStateDeployed,
+						DeployedHash: new(expectedHash),
+					}},
+				}, nil
+			}
+
+			_, err := reconcileServiceSet()
+			Expect(err).To(Succeed())
+			Expect(Object(&serviceSet)()).Should(HaveField("Status.Services", ConsistOf(SatisfyAll(
+				HaveField("State", kcmv1.ServiceStateDeployed),
+				HaveField("LastDeployedHash", expectedHash),
+				HaveField("Version", specVersion),
+			))))
+		})
 	})
 })
-
-func prepareStateManagementProvider() kcmv1.StateManagementProvider {
-	return kcmv1.StateManagementProvider{
-		GenerateName: "state-management-provider-",
-		Spec: kcmv1.StateManagementProviderSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: testLabel,
-			},
-			Adapter: kcmv1.ResourceReference{
-				APIVersion: adapterAPIVersion,
-				Kind:       adapterKind,
-				Name:       adapterName,
-				Namespace:  adapterNamespace,
-				ReadinessRule: `self.status.availableReplicas == self.status.replicas &&
-self.status.availableReplicas == self.status.updatedReplicas &&
-self.status.availableReplicas == self.status.readyReplicas`,
-			},
-			Provisioner: []kcmv1.ResourceReference{
-				{
-					APIVersion: provisionerAPIVersion,
-					Kind:       provisionerKind,
-					Name:       provisionerName,
-					Namespace:  provisionerNamespace,
-					ReadinessRule: `self.status.availableReplicas == self.status.replicas &&
-self.status.availableReplicas == self.status.updatedReplicas &&
-self.status.availableReplicas == self.status.readyReplicas`,
-				},
-			},
-			ProvisionerCRDs: []kcmv1.ProvisionerCRD{
-				{
-					Group:   provisionerCRDGroup,
-					Version: "v1",
-					Resources: []string{
-						provisionerCRDResource,
-					},
-				},
-			},
-		},
-	}
-}
 
 func prepareServiceSet(namespace, providerName, clusterName string) kcmv1.ServiceSet {
 	return kcmv1.ServiceSet{
 		GenerateName: "service-set-",
 		Namespace:    namespace,
-		Labels:       testLabel,
 		Finalizers:   []string{kcmv1.ServiceSetFinalizer},
 		Spec: kcmv1.ServiceSetSpec{
 			Cluster: clusterName,
