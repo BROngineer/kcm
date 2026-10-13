@@ -22,12 +22,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brongineer/ksm-provider-api/notify"
+	registryserver "github.com/brongineer/ksm-provider-api/registry/server"
 	addoncontrollerv1beta1 "github.com/projectsveltos/addon-controller/api/v1beta1"
 	libsveltosv1beta1 "github.com/projectsveltos/libsveltos/api/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -41,6 +46,7 @@ import (
 	"github.com/K0rdent/kcm/internal/controller/serviceset"
 	"github.com/K0rdent/kcm/internal/controller/statemanagementprovider"
 	"github.com/K0rdent/kcm/internal/helm"
+	"github.com/K0rdent/kcm/internal/ksm"
 	"github.com/K0rdent/kcm/internal/record"
 	"github.com/K0rdent/kcm/internal/telemetry"
 	helmutil "github.com/K0rdent/kcm/internal/util/helm"
@@ -50,6 +56,7 @@ import (
 )
 
 type config struct {
+	ksmProviderTokenFile          string
 	kcmTemplatesChartName         string
 	determinedRepositoryType      string
 	registryCredentialsSecretName string
@@ -59,16 +66,16 @@ type config struct {
 	globalK0sURL                  string
 	k0sURLCertSecretName          string
 	templatesRepoURL              string
+	ksmRegistry                   ksm.RegistryOptions
 	defaultHelmTimeout            time.Duration
 	capiClusterPollInterval       time.Duration
+	ksmMaxProviderTimeout         time.Duration
 	maxConcurrentReconciles       int
 	insecureRegistry              bool
 	createAccessManagement        bool
 	enableWebhook                 bool
 	createRelease                 bool
 	createTemplates               bool
-	enableSveltosCtrl             bool
-	enableSveltosExpireCtrl       bool
 	enableInPlaceUpdates          bool
 	createManagement              bool
 	fluxEnabled                   bool
@@ -104,8 +111,12 @@ func main() {
 		webhookCertDir                string
 		pprofBindAddress              string
 		leaderElectionNamespace       string
-		enableSveltosCtrl             bool
-		enableSveltosExpireCtrl       bool
+		ksmRegistryBindAddress        string
+		ksmRegistryCertDir            string
+		ksmProviderTokenFile          string
+		ksmAllowedProviders           []string
+		ksmRegistryInsecure           bool
+		ksmMaxProviderTimeout         time.Duration
 		enableInPlaceUpdates          bool
 		defaultHelmTimeout            time.Duration
 		capiClusterPollInterval       time.Duration
@@ -147,8 +158,21 @@ func main() {
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs/",
 		"Webhook cert dir, only used when webhook-port is specified.")
 	flag.StringVar(&pprofBindAddress, "pprof-bind-address", "", "The TCP address that the controller should bind to for serving pprof, \"0\" or empty value disables pprof")
-	flag.BoolVar(&enableSveltosCtrl, "enable-sveltos-ctrl", true, "Enable Sveltos built-in provider controller")
-	flag.BoolVar(&enableSveltosExpireCtrl, "enable-sveltos-expire-ctrl", false, "Enable SveltosCluster stuck (expired) tokens controller")
+	flag.StringVar(&ksmRegistryBindAddress, "ksm-registry-bind-address", ":8443", "The address the state management provider registry binds to.")
+	flag.StringVar(&ksmRegistryCertDir, "ksm-registry-cert-dir", "/etc/ksm-registry/tls",
+		"Directory with tls.crt and tls.key serving the state management provider registry.")
+	flag.BoolVar(&ksmRegistryInsecure, "ksm-registry-insecure", false,
+		"Serve the state management provider registry over plain HTTP. Testing and demos only.")
+	flag.Func("ksm-allowed-provider",
+		"A state management provider allowed to register, as name=namespace/serviceaccount. Can be repeated.",
+		func(s string) error {
+			ksmAllowedProviders = append(ksmAllowedProviders, s)
+			return nil
+		})
+	flag.StringVar(&ksmProviderTokenFile, "ksm-provider-token-file", "/var/run/secrets/ksm/provider/token",
+		"Projected ServiceAccount token presented to state management providers.")
+	flag.DurationVar(&ksmMaxProviderTimeout, "ksm-max-provider-timeout", 30*time.Second,
+		"Upper bound for a single state management provider call.")
 	flag.BoolVar(&enableInPlaceUpdates, "enable-in-place-updates", false,
 		"Enable Cluster API in-place updates (experimental), passed as global.enableInPlaceUpdates value to the providers")
 	flag.DurationVar(&defaultHelmTimeout, "default-helm-timeout", 0, "Specifies the timeout duration for Helm install or upgrade operations. If unset, Flux’s default value will be used")
@@ -191,6 +215,12 @@ func main() {
 	determinedRepositoryType, err := helmutil.DetermineDefaultRepositoryType(templatesRepoURL)
 	if err != nil {
 		setupLog.Error(err, "failed to determine default repository type")
+		os.Exit(1)
+	}
+
+	ksmAllowed, err := ksm.ParseAllowList(ksmAllowedProviders)
+	if err != nil {
+		setupLog.Error(err, "invalid --ksm-allowed-provider")
 		os.Exit(1)
 	}
 
@@ -237,6 +267,10 @@ func main() {
 
 		Cache: cache.Options{
 			DefaultTransform: cache.TransformStripManagedFields(),
+			ByObject: map[client.Object]cache.ByObject{
+				// only provider state-change notifications are read from the cache.
+				&corev1.Event{}: {Field: fields.ParseSelectorOrDie(notify.FieldSelector())},
+			},
 		},
 	}
 
@@ -280,12 +314,18 @@ func main() {
 		createRelease:                 createRelease,
 		createTemplates:               createTemplates,
 		kcmTemplatesChartName:         kcmTemplatesChartName,
-		enableSveltosCtrl:             enableSveltosCtrl,
-		enableSveltosExpireCtrl:       enableSveltosExpireCtrl,
 		enableInPlaceUpdates:          enableInPlaceUpdates,
-		defaultHelmTimeout:            defaultHelmTimeout,
-		capiClusterPollInterval:       capiClusterPollInterval,
-		fluxEnabled:                   fluxEnabled,
+		ksmRegistry: ksm.RegistryOptions{
+			Allowed:     ksmAllowed,
+			BindAddress: ksmRegistryBindAddress,
+			CertDir:     ksmRegistryCertDir,
+			Insecure:    ksmRegistryInsecure,
+		},
+		ksmProviderTokenFile:    ksmProviderTokenFile,
+		ksmMaxProviderTimeout:   ksmMaxProviderTimeout,
+		defaultHelmTimeout:      defaultHelmTimeout,
+		capiClusterPollInterval: capiClusterPollInterval,
+		fluxEnabled:             fluxEnabled,
 	}
 	if err := setupControllers(mgr, systemNamespace, cfg); err != nil {
 		setupLog.Error(err, "failed to setup controllers")
@@ -468,22 +508,35 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		return err
 	}
 
-	if cfg.enableSveltosCtrl {
-		// we'll add sveltos types to the scheme only in case sveltos integration is enabled
-		setupLog.Info("adding sveltos types to the scheme")
-		utilruntime.Must(addoncontrollerv1beta1.AddToScheme(scheme))
-		utilruntime.Must(libsveltosv1beta1.AddToScheme(scheme))
+	// the verifier and the target cluster check read SveltosCluster objects.
+	setupLog.Info("adding sveltos types to the scheme")
+	utilruntime.Must(addoncontrollerv1beta1.AddToScheme(scheme))
+	utilruntime.Must(libsveltosv1beta1.AddToScheme(scheme))
 
-		setupLog.Info("setting up built-in ServiceSet controller")
-		if err = (&serviceset.ServiceSetReconciler{
-			SystemNamespace:         currentNamespace,
-			MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ServiceSet")
-			return err
-		}
-		setupLog.Info("setup for ServiceSet controller successful")
+	registry, transitions, err := ksm.SetupRegistry(mgr, cfg.ksmRegistry)
+	if err != nil {
+		setupLog.Error(err, "unable to set up state management provider registry")
+		return err
 	}
+	clients := &ksm.ClientCache{
+		TokenFile:  cfg.ksmProviderTokenFile,
+		MaxTimeout: cfg.ksmMaxProviderTimeout,
+	}
+
+	setupLog.Info("setting up ServiceSet controller")
+	if err = (&serviceset.ServiceSetReconciler{
+		SystemNamespace: currentNamespace,
+		Registry:        registry,
+		NewProviderClient: func(entry registryserver.Entry) (serviceset.ProviderClient, error) {
+			return clients.Client(entry)
+		},
+		Transitions:             transitions,
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceSet")
+		return err
+	}
+	setupLog.Info("setup for ServiceSet controller successful")
 	return nil
 }
 
