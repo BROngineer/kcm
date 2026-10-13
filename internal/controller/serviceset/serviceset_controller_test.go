@@ -141,8 +141,16 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 		Expect(client.IgnoreNotFound(cl.Delete(ctx, &namespace))).To(Succeed())
 	})
 
+	// a new ServiceSet: services in spec, none in status yet.
+	addSpecService := func() {
+		serviceSet.Spec.Services = []kcmv1.ServiceWithValues{{Name: "svc", Namespace: namespace.Name, Template: "svc-template"}}
+		Expect(cl.Update(ctx, &serviceSet)).To(Succeed())
+	}
+
 	Context("When the provider is not registered", func() {
 		It("should only update the status of the ServiceSet", func() {
+			addSpecService()
+
 			_, err := reconcileServiceSet()
 			Expect(err).To(Succeed())
 			Expect(Object(&serviceSet)()).Should(SatisfyAll(
@@ -152,6 +160,7 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 				HaveField("Status.Cluster.Kind", kcmv1.ClusterDeploymentKind),
 				HaveField("Status.Cluster.Name", clusterDeployment.Name),
 				HaveField("Status.Cluster.Namespace", clusterDeployment.Namespace),
+				HaveField("Status.Services", BeEmpty()),
 			))
 			Expect(fakeProvider.DeployCalls()).To(BeEmpty())
 		})
@@ -160,6 +169,7 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 	Context("When the provider is suspended", func() {
 		It("should only update the status of the ServiceSet", func() {
 			registerProvider(registryserver.StateSuspended)
+			addSpecService()
 
 			_, err := reconcileServiceSet()
 			Expect(err).To(Succeed())
@@ -167,6 +177,7 @@ var _ = Describe("ServiceSet Controller integration tests", Ordered, func() {
 				HaveField("Status.Provider.Ready", BeFalse()),
 				HaveField("Status.Provider.Suspended", BeTrue()),
 				HaveField("Status.Cluster.Name", clusterDeployment.Name),
+				HaveField("Status.Services", BeEmpty()),
 			))
 			Expect(fakeProvider.DeployCalls()).To(BeEmpty())
 		})

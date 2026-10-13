@@ -95,11 +95,13 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	entry, registered := r.Registry.Lookup(providerName)
 
 	clone := serviceSet.DeepCopy()
+	providerCalled := false
 	defer func() {
-		if err == nil {
+		if err == nil && providerCalled {
 			// fillNotDeployedServices relies on the service type having
 			// already been resolved for every service reachable from spec,
-			// which only holds once the profile was built successfully.
+			// which only holds once the provider has reported the services;
+			// without it the entries lack the type the CRD requires.
 			fillNotDeployedServices(serviceSet, r.timeFunc)
 		}
 		// we'll update serviceSet status even in case of an error occurred
@@ -143,6 +145,7 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
+	providerCalled = true
 	serviceHashes, err := r.deployServices(ctx, rgnClient, entry, serviceSet)
 	if err != nil {
 		return ctrl.Result{}, err
