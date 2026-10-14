@@ -45,7 +45,6 @@ import (
 	"github.com/K0rdent/kcm/internal/controller/ipam"
 	"github.com/K0rdent/kcm/internal/controller/region"
 	"github.com/K0rdent/kcm/internal/controller/serviceset"
-	"github.com/K0rdent/kcm/internal/controller/statemanagementprovider"
 	"github.com/K0rdent/kcm/internal/helm"
 	"github.com/K0rdent/kcm/internal/ksm"
 	"github.com/K0rdent/kcm/internal/record"
@@ -383,13 +382,6 @@ func setupControllers(mgr ctrl.Manager, currentNamespace string, cfg config) err
 		},
 	}
 
-	if err = (&statemanagementprovider.Reconciler{
-		Client:          mgr.GetClient(),
-		SystemNamespace: currentNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "StateManagementProvider")
-		return err
-	}
 	if err = (&controller.ClusterTemplateReconciler{
 		TemplateReconciler: templateReconciler,
 	}).SetupWithManager(mgr); err != nil {
