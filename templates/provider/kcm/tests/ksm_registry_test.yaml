@@ -8,7 +8,7 @@ release:
   namespace: kcm-system
 
 tests:
-  - it: "defaults -> registry served over plain HTTP and the Sveltos adapter allowed"
+  - it: "defaults -> registry served over plain HTTP"
     template: templates/deployment.yaml
     asserts:
       - contains:
@@ -17,9 +17,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --ksm-registry-url=http://kcm-ksm-registry.kcm-system.svc:8443
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --ksm-allowed-provider=ksm-projectsveltos=projectsveltos/ksm-provider-sveltos
       - notContains:
           path: spec.template.spec.volumes
           content:
@@ -87,22 +84,3 @@ tests:
           path: spec.issuerRef.name
           value: kcm-ksm-registry-ca
         documentIndex: 3
-
-  - it: "several providers -> one allow-list flag each"
-    template: templates/deployment.yaml
-    set:
-      ksm.providers:
-        - name: a
-          serviceAccount: ns-a/sa-a
-        - name: b
-          serviceAccount: ns-b/sa-b
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --ksm-allowed-provider=a=ns-a/sa-a
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --ksm-allowed-provider=b=ns-b/sa-b
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --ksm-allowed-provider=ksm-projectsveltos=projectsveltos/ksm-provider-sveltos

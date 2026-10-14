@@ -7,7 +7,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/a8m/envsubst v1.4.3
-	github.com/brongineer/ksm-provider-api v0.2.0
+	github.com/brongineer/ksm-provider-api v0.3.0
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cert-manager/cert-manager v1.21.2
 	github.com/fluxcd/helm-controller/api v1.6.5

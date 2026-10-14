@@ -320,21 +320,6 @@
           "description": "Upper bound for a single call to a provider",
           "type": "string"
         },
-        "providers": {
-          "description": "Providers allowed to register, each as a provider name and the namespace/name of the ServiceAccount it registers with",
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "serviceAccount": {
-                "type": "string"
-              }
-            }
-          }
-        },
         "registry": {
           "description": "Registry state management providers register with",
           "type": "object",

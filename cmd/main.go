@@ -116,7 +116,6 @@ func main() {
 		ksmRegistryURL                string
 		ksmRegistryCertDir            string
 		ksmProviderTokenFile          string
-		ksmAllowedProviders           []string
 		ksmRegistryInsecure           bool
 		ksmMaxProviderTimeout         time.Duration
 		enableInPlaceUpdates          bool
@@ -167,12 +166,6 @@ func main() {
 		"Directory with tls.crt and tls.key serving the state management provider registry.")
 	flag.BoolVar(&ksmRegistryInsecure, "ksm-registry-insecure", false,
 		"Serve the state management provider registry over plain HTTP. Testing and demos only.")
-	flag.Func("ksm-allowed-provider",
-		"A state management provider allowed to register, as name=namespace/serviceaccount. Can be repeated.",
-		func(s string) error {
-			ksmAllowedProviders = append(ksmAllowedProviders, s)
-			return nil
-		})
 	flag.StringVar(&ksmProviderTokenFile, "ksm-provider-token-file", "/var/run/secrets/ksm/provider/token",
 		"Projected ServiceAccount token presented to state management providers.")
 	flag.DurationVar(&ksmMaxProviderTimeout, "ksm-max-provider-timeout", 30*time.Second,
@@ -219,12 +212,6 @@ func main() {
 	determinedRepositoryType, err := helmutil.DetermineDefaultRepositoryType(templatesRepoURL)
 	if err != nil {
 		setupLog.Error(err, "failed to determine default repository type")
-		os.Exit(1)
-	}
-
-	ksmAllowed, err := ksm.ParseAllowList(ksmAllowedProviders)
-	if err != nil {
-		setupLog.Error(err, "invalid --ksm-allowed-provider")
 		os.Exit(1)
 	}
 
@@ -320,7 +307,6 @@ func main() {
 		kcmTemplatesChartName:         kcmTemplatesChartName,
 		enableInPlaceUpdates:          enableInPlaceUpdates,
 		ksmRegistry: ksm.RegistryOptions{
-			Allowed:     ksmAllowed,
 			BindAddress: ksmRegistryBindAddress,
 			CertDir:     ksmRegistryCertDir,
 			Insecure:    ksmRegistryInsecure,

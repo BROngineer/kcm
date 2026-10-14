@@ -15,20 +15,24 @@
 package ksm
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/brongineer/ksm-provider-api/auth"
 	"github.com/brongineer/ksm-provider-api/httpserver"
 	registryserver "github.com/brongineer/ksm-provider-api/registry/server"
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
 )
 
 const (
@@ -38,29 +42,29 @@ const (
 
 // RegistryOptions configures the provider registry served by kcm.
 type RegistryOptions struct {
-	// Allowed maps a provider name to the only ServiceAccount username that may register it.
-	Allowed     map[string]string
 	BindAddress string
 	// CertDir holds tls.crt and tls.key; unused when Insecure is set.
 	CertDir  string
 	Insecure bool
 }
 
-// ParseAllowList parses "name=namespace/serviceaccount" entries into the registry allow-list.
-func ParseAllowList(entries []string) (map[string]string, error) {
-	allowed := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		name, sa, ok := strings.Cut(entry, "=")
-		namespace, saName, saOK := strings.Cut(sa, "/")
-		if !ok || !saOK || name == "" || namespace == "" || saName == "" {
-			return nil, fmt.Errorf("invalid allowed provider %q: expected name=namespace/serviceaccount", entry)
+// AuthorizeFromStateManagementProviders allows a ServiceAccount to register a provider
+// name when the StateManagementProvider of that name declares it in spec.registration.
+func AuthorizeFromStateManagementProviders(c client.Reader) func(ctx context.Context, provider, username string) (bool, error) {
+	return func(ctx context.Context, provider, username string) (bool, error) {
+		smp := new(kcmv1.StateManagementProvider)
+		if err := c.Get(ctx, client.ObjectKey{Name: provider}, smp); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("failed to get StateManagementProvider %s: %w", provider, err)
 		}
-		if _, exists := allowed[name]; exists {
-			return nil, fmt.Errorf("provider %q is allowed more than once", name)
+		sa := smp.Spec.Registration.ServiceAccount
+		if sa.Namespace == "" || sa.Name == "" {
+			return false, nil
 		}
-		allowed[name] = auth.ServiceAccountUsername(namespace, saName)
+		return auth.ServiceAccountUsername(sa.Namespace, sa.Name) == username, nil
 	}
-	return allowed, nil
 }
 
 // SetupRegistry adds the provider registry and its HTTP server to mgr. The
@@ -88,9 +92,10 @@ func SetupRegistry(mgr ctrl.Manager, opts RegistryOptions) (*registryserver.Regi
 	h, err := registryserver.NewHandler(registryserver.HandlerConfig{
 		Registry:      reg,
 		Authenticator: auth.NewCachedAuthenticator(auth.NewTokenReviewAuthenticator(cs, auth.RegistryAudience), authCacheTTL),
-		Allowed:       opts.Allowed,
-		IsLeader:      registryserver.LeaderFromElected(mgr.Elected()),
-		Logger:        slogger,
+		// read from the manager's cache on every heartbeat, so declarations apply without a restart.
+		Authorize: AuthorizeFromStateManagementProviders(mgr.GetClient()),
+		IsLeader:  registryserver.LeaderFromElected(mgr.Elected()),
+		Logger:    slogger,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create registry handler: %w", err)

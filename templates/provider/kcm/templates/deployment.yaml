@@ -69,9 +69,6 @@ spec:
         - --ksm-registry-bind-address=:{{ .Values.ksm.registry.port }}
         - --ksm-registry-url={{ include "kcm.ksm.registryURL" . }}
         - --ksm-registry-insecure={{ .Values.ksm.registry.insecure }}
-        {{- range .Values.ksm.providers }}
-        - --ksm-allowed-provider={{ .name }}={{ .serviceAccount }}
-        {{- end }}
         - --ksm-max-provider-timeout={{ .Values.ksm.maxProviderTimeout }}
         command:
         - /manager

@@ -16,6 +16,7 @@ package ksm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,33 +25,58 @@ import (
 	registryserver "github.com/brongineer/ksm-provider-api/registry/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	kcmv1 "github.com/K0rdent/kcm/api/v1beta1"
 )
 
-func TestParseAllowList(t *testing.T) {
-	tests := []struct {
-		name    string
-		entries []string
-		want    map[string]string
-		wantErr bool
-	}{
-		{name: "empty", entries: nil, want: map[string]string{}},
-		{
-			name:    "several providers",
-			entries: []string{"ksm-projectsveltos=projectsveltos/ksm-provider-sveltos", "other=ns/sa"},
-			want: map[string]string{
-				"ksm-projectsveltos": "system:serviceaccount:projectsveltos:ksm-provider-sveltos",
-				"other":              "system:serviceaccount:ns:sa",
+func TestAuthorizeFromStateManagementProviders(t *testing.T) {
+	const (
+		providerName = "ksm-projectsveltos"
+		adapterUser  = "system:serviceaccount:projectsveltos:ksm-provider-sveltos"
+	)
+	declared := &kcmv1.StateManagementProvider{
+		Name: providerName,
+		Spec: kcmv1.StateManagementProviderSpec{
+			Registration: kcmv1.ProviderRegistration{
+				ServiceAccount: kcmv1.ServiceAccountReference{Namespace: "projectsveltos", Name: "ksm-provider-sveltos"},
 			},
 		},
-		{name: "missing service account", entries: []string{"name"}, wantErr: true},
-		{name: "missing namespace", entries: []string{"name=sa"}, wantErr: true},
-		{name: "empty name", entries: []string{"=ns/sa"}, wantErr: true},
-		{name: "empty service account name", entries: []string{"name=ns/"}, wantErr: true},
-		{name: "duplicate name", entries: []string{"name=ns/a", "name=ns/b"}, wantErr: true},
+	}
+	undeclared := &kcmv1.StateManagementProvider{Name: providerName}
+
+	tests := []struct {
+		name     string
+		objects  []client.Object
+		getErr   error
+		username string
+		want     bool
+		wantErr  bool
+	}{
+		{name: "declared ServiceAccount", objects: []client.Object{declared}, username: adapterUser, want: true},
+		{name: "another ServiceAccount", objects: []client.Object{declared}, username: "system:serviceaccount:other:sa"},
+		{name: "no StateManagementProvider", username: adapterUser},
+		{name: "no registration", objects: []client.Object{undeclared}, username: adapterUser},
+		{name: "lookup fails", getErr: errors.New("cache not synced"), username: adapterUser, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseAllowList(tt.entries)
+			scheme := runtime.NewScheme()
+			require.NoError(t, kcmv1.AddToScheme(scheme))
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tt.objects...).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if tt.getErr != nil {
+							return tt.getErr
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).Build()
+
+			got, err := AuthorizeFromStateManagementProviders(c)(t.Context(), providerName, tt.username)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
