@@ -77,17 +77,23 @@ func (b *Builder) Build() (*kcmv1.ServiceSet, error) {
 
 	b.ServiceSet.OwnerReferences = []metav1.OwnerReference{*ownerReference}
 
-	labels, err := extractRequiredLabels(b.Selector)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract required labels from StateManagementProvider selector: %w", err)
-	}
-	if b.ServiceSet.Labels == nil {
-		b.ServiceSet.Labels = labels
-	} else {
-		maps.Copy(b.ServiceSet.Labels, labels)
+	// the StateManagementProvider selector is optional; without it there are no labels to add.
+	if b.Selector != nil {
+		labels, err := extractRequiredLabels(b.Selector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract required labels from StateManagementProvider selector: %w", err)
+		}
+		if b.ServiceSet.Labels == nil {
+			b.ServiceSet.Labels = labels
+		} else {
+			maps.Copy(b.ServiceSet.Labels, labels)
+		}
 	}
 
-	var providerConfig kcmv1.StateManagementProviderConfig
+	var (
+		providerConfig kcmv1.StateManagementProviderConfig
+		err            error
+	)
 	b.ServiceSet.Spec = kcmv1.ServiceSetSpec{Services: b.ServicesToDeploy}
 	if b.ClusterDeployment != nil {
 		b.ServiceSet.Spec.Cluster = b.ClusterDeployment.Name
