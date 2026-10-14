@@ -172,6 +172,31 @@ spec:
                   minItems: 1
                   type: array
                   x-kubernetes-list-type: atomic
+                registration:
+                  description: |-
+                    registration declares who may register this provider with kcm's provider registry.
+                    Without it the provider's adapter cannot register.
+                  properties:
+                    serviceAccount:
+                      description: serviceAccount is the ServiceAccount the provider's adapter authenticates with.
+                      properties:
+                        name:
+                          description: name is the name of the ServiceAccount
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: namespace is the namespace of the ServiceAccount
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                      required:
+                        - name
+                        - namespace
+                      type: object
+                  required:
+                    - serviceAccount
+                  type: object
                 selector:
                   description: selector is label selector to be used to filter the [ServiceSet] objects to be reconciled.
                   properties:

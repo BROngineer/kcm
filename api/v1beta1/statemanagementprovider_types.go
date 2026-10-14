@@ -127,6 +127,11 @@ type StateManagementProviderSpec struct {
 	// adapter is an operator that translates the k0rdent API objects into provider-specific API objects.
 	// It is represented as a reference to operator object
 	Adapter ResourceReference `json:"adapter,omitzero"`
+	// +optional
+
+	// registration declares who may register this provider with kcm's provider registry.
+	// Without it the provider's adapter cannot register.
+	Registration ProviderRegistration `json:"registration,omitzero"`
 	// +listType=atomic
 	// +required
 	// +kubebuilder:validation:MinItems=1
@@ -147,6 +152,30 @@ type StateManagementProviderSpec struct {
 	// suspend suspends the StateManagementProvider. Suspending a StateManagementProvider
 	// will prevent the adapter from reconciling any resources.
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// ProviderRegistration declares the identity allowed to register a state management provider.
+type ProviderRegistration struct {
+	// +required
+
+	// serviceAccount is the ServiceAccount the provider's adapter authenticates with.
+	ServiceAccount ServiceAccountReference `json:"serviceAccount,omitzero"`
+}
+
+// ServiceAccountReference references a ServiceAccount.
+type ServiceAccountReference struct {
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+
+	// namespace is the namespace of the ServiceAccount
+	Namespace string `json:"namespace,omitempty"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+
+	// name is the name of the ServiceAccount
+	Name string `json:"name,omitempty"`
 }
 
 // ResourceReference is a cross-namespace reference to a resource
