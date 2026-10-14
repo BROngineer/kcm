@@ -2,7 +2,7 @@ apiVersion: v2
 name: projectsveltos
 description: A Helm chart to refer the official projectsveltos helm chart
 type: application
-version: 1.16.1
+version: 1.16.2
 appVersion: "v1.16.0"
 dependencies:
   - name: sveltos-crds
@@ -13,6 +13,6 @@ dependencies:
     repository: https://projectsveltos.github.io/helm-charts
   # kcm enables the adapter for the management cluster only.
   - name: ksm-provider-sveltos
-    version: 0.1.2
+    version: 0.1.3
     repository: oci://ghcr.io/brongineer/charts
     condition: ksm-provider-sveltos.enabled

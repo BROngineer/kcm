@@ -225,6 +225,8 @@ func getStateManagementAdapterValues(opts ReconcileComponentsOpts) map[string]an
 		"systemNamespace":   opts.Namespace,
 		"kcmServiceAccount": adapter.KCMServiceAccount,
 		"tls":               map[string]any{"insecure": adapter.Insecure},
+		// the adapter declares itself to kcm's registry; the chart keeps it off for older kcm.
+		"stateManagementProvider": map[string]any{"create": true},
 	}
 	if adapter.RegistryURL != "" {
 		values["registry"] = map[string]any{"url": adapter.RegistryURL}
