@@ -118,39 +118,39 @@ const (
 
 // StateManagementProviderSpec defines the desired state of StateManagementProvider
 type StateManagementProviderSpec struct {
-	// +required
-
-	// selector is label selector to be used to filter the [ServiceSet] objects to be reconciled.
-	Selector *metav1.LabelSelector `json:"selector,omitempty"`
-	// +required
-
-	// adapter is an operator that translates the k0rdent API objects into provider-specific API objects.
-	// It is represented as a reference to operator object
-	Adapter ResourceReference `json:"adapter,omitzero"`
 	// +optional
 
+	// selector is label selector to be used to filter the [ServiceSet] objects to be reconciled.
+	// Its labels are only copied onto new ServiceSets; kcm no longer filters by them.
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+	// +optional
+
+	// adapter is an operator that translates the k0rdent API objects into provider-specific API objects.
+	// It is represented as a reference to operator object. No longer used by kcm.
+	Adapter ResourceReference `json:"adapter,omitzero"`
+	// +required
+
 	// registration declares who may register this provider with kcm's provider registry.
-	// Without it the provider's adapter cannot register.
 	Registration ProviderRegistration `json:"registration,omitzero"`
 	// +listType=atomic
-	// +required
+	// +optional
 	// +kubebuilder:validation:MinItems=1
 
 	// provisioner is a set of resources required for the provider to operate. These resources
 	// reconcile provider-specific API objects. It is represented as a list of references to
-	// provider's objects
+	// provider's objects. No longer used by kcm.
 	Provisioner []ResourceReference `json:"provisioner,omitempty"`
 	// +listType=atomic
-	// +required
+	// +optional
 	// +kubebuilder:validation:MinItems=1
 
 	// provisionerCRDs is a set of references to provider-specific CustomResourceDefinition objects,
-	// which are required for the provider to operate.
+	// which are required for the provider to operate. No longer used by kcm.
 	ProvisionerCRDs []ProvisionerCRD `json:"provisionerCRDs,omitempty"`
 	// +optional
 
-	// suspend suspends the StateManagementProvider. Suspending a StateManagementProvider
-	// will prevent the adapter from reconciling any resources.
+	// suspend suspends the StateManagementProvider. No longer used by kcm: a provider is
+	// suspended by scaling its adapter to zero.
 	Suspend bool `json:"suspend,omitempty"`
 }
 

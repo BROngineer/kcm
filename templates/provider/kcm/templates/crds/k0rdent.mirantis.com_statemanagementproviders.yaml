@@ -74,7 +74,7 @@ spec:
                 adapter:
                   description: |-
                     adapter is an operator that translates the k0rdent API objects into provider-specific API objects.
-                    It is represented as a reference to operator object
+                    It is represented as a reference to operator object. No longer used by kcm.
                   properties:
                     apiVersion:
                       description: apiVersion is the API version of the resource
@@ -107,7 +107,7 @@ spec:
                   description: |-
                     provisioner is a set of resources required for the provider to operate. These resources
                     reconcile provider-specific API objects. It is represented as a list of references to
-                    provider's objects
+                    provider's objects. No longer used by kcm.
                   items:
                     description: ResourceReference is a cross-namespace reference to a resource
                     properties:
@@ -144,7 +144,7 @@ spec:
                 provisionerCRDs:
                   description: |-
                     provisionerCRDs is a set of references to provider-specific CustomResourceDefinition objects,
-                    which are required for the provider to operate.
+                    which are required for the provider to operate. No longer used by kcm.
                   items:
                     description: ProvisionerCRD is a GVRs for a custom resource reconciled by provisioners
                     properties:
@@ -173,9 +173,7 @@ spec:
                   type: array
                   x-kubernetes-list-type: atomic
                 registration:
-                  description: |-
-                    registration declares who may register this provider with kcm's provider registry.
-                    Without it the provider's adapter cannot register.
+                  description: registration declares who may register this provider with kcm's provider registry.
                   properties:
                     serviceAccount:
                       description: serviceAccount is the ServiceAccount the provider's adapter authenticates with.
@@ -198,7 +196,9 @@ spec:
                     - serviceAccount
                   type: object
                 selector:
-                  description: selector is label selector to be used to filter the [ServiceSet] objects to be reconciled.
+                  description: |-
+                    selector is label selector to be used to filter the [ServiceSet] objects to be reconciled.
+                    Its labels are only copied onto new ServiceSets; kcm no longer filters by them.
                   properties:
                     matchExpressions:
                       description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
@@ -243,14 +243,11 @@ spec:
                   x-kubernetes-map-type: atomic
                 suspend:
                   description: |-
-                    suspend suspends the StateManagementProvider. Suspending a StateManagementProvider
-                    will prevent the adapter from reconciling any resources.
+                    suspend suspends the StateManagementProvider. No longer used by kcm: a provider is
+                    suspended by scaling its adapter to zero.
                   type: boolean
               required:
-                - adapter
-                - provisioner
-                - provisionerCRDs
-                - selector
+                - registration
               type: object
             status:
               description: status describes the observed state

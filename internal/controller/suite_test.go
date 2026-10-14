@@ -331,6 +331,9 @@ func seedStateManagementProvider(ctx context.Context, k8sClient client.Client) e
 		smp = &kcmv1.StateManagementProvider{
 			Name: smpName,
 			Spec: kcmv1.StateManagementProviderSpec{
+				Registration: kcmv1.ProviderRegistration{
+					ServiceAccount: kcmv1.ServiceAccountReference{Namespace: "projectsveltos", Name: "ksm-provider-sveltos"},
+				},
 				Selector: &metav1.LabelSelector{},
 				Adapter: kcmv1.ResourceReference{
 					APIVersion: adapterAPIVersion,
