@@ -129,6 +129,9 @@ running make (e.g. `export DEV_PROVIDER=azure`).
 2. Run `make dev-apply` to deploy and configure management cluster.
 
 3. Wait a couple of minutes for management components to be up and running.
+   Services are deployed by the `ksm-provider-sveltos` adapter, installed with the
+   `projectsveltos` component; see
+   [State management providers](state-management-providers.md).
 
 4. Apply credentials for your provider by executing `make dev-creds-apply`.
 
