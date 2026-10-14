@@ -22,12 +22,9 @@ rules:
   resources:
   - serviceaccounts
   verbs:
-  - create
   - watch
   - get
   - list
-  - update
-  - impersonate
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
@@ -53,12 +50,6 @@ rules:
   - update
   - bind
   - escalate
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts/token
-  verbs:
-  - create
 - apiGroups:
   - operator.cluster.x-k8s.io
   resources:
