@@ -785,6 +785,102 @@ var _ = Describe("Management Controller", func() {
 		})
 	})
 
+	Context("handOverStateManagementProvider", func() {
+		const (
+			helmManagedByLabel         = "app.kubernetes.io/managed-by"
+			helmReleaseNameAnnotation  = "meta.helm.sh/release-name"
+			helmReleaseNamespaceAnnot  = "meta.helm.sh/release-namespace"
+			sveltosRelease, sveltosNS  = "projectsveltos", "projectsveltos"
+			adapterServiceAccountName  = "ksm-provider-sveltos"
+			unrelatedServiceAccountNS  = "elsewhere"
+			unrelatedServiceAccountSvc = "someone"
+		)
+		key := client.ObjectKey{Name: kubeutil.DefaultStateManagementProvider}
+
+		// the suite seeds this object; restore it after every case.
+		BeforeEach(func() {
+			original := new(kcmv1.StateManagementProvider)
+			Expect(k8sClient.Get(ctx, key, original)).To(Succeed())
+			DeferCleanup(func() {
+				current := new(kcmv1.StateManagementProvider)
+				err := k8sClient.Get(ctx, key, current)
+				if apierrors.IsNotFound(err) {
+					restored := original.DeepCopy()
+					restored.ResourceVersion = ""
+					Expect(k8sClient.Create(ctx, restored)).To(Succeed())
+					return
+				}
+				Expect(err).NotTo(HaveOccurred())
+				current.Labels, current.Annotations = original.Labels, original.Annotations
+				current.OwnerReferences = original.OwnerReferences
+				current.Spec = original.Spec
+				Expect(k8sClient.Update(ctx, current)).To(Succeed())
+			})
+		})
+
+		unrelatedRegistration := kcmv1.ProviderRegistration{
+			ServiceAccount: kcmv1.ServiceAccountReference{Namespace: unrelatedServiceAccountNS, Name: unrelatedServiceAccountSvc},
+		}
+
+		It("hands an object kcm created over to Helm", func() {
+			smp := new(kcmv1.StateManagementProvider)
+			Expect(k8sClient.Get(ctx, key, smp)).To(Succeed())
+			// other cases reconcile Management, which may already have handed the object over.
+			smp.Labels, smp.Annotations = nil, nil
+			smp.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: kcmv1.GroupVersion.String(), Kind: kcmv1.ManagementKind, Name: "kcm", UID: "management-uid",
+			}}
+			smp.Spec = kcmv1.StateManagementProviderSpec{
+				Registration: unrelatedRegistration,
+				Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"legacy": "true"}},
+				Suspend:      true,
+			}
+			Expect(k8sClient.Update(ctx, smp)).To(Succeed())
+
+			r := &ManagementReconciler{Client: k8sClient}
+			Expect(r.handOverStateManagementProvider(ctx)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, key, smp)).To(Succeed())
+			Expect(smp.Labels).To(HaveKeyWithValue(helmManagedByLabel, "Helm"))
+			Expect(smp.Annotations).To(SatisfyAll(
+				HaveKeyWithValue(helmReleaseNameAnnotation, sveltosRelease),
+				HaveKeyWithValue(helmReleaseNamespaceAnnot, sveltosNS),
+			))
+			Expect(smp.OwnerReferences).To(BeEmpty())
+			Expect(smp.Spec).To(Equal(kcmv1.StateManagementProviderSpec{
+				Registration: kcmv1.ProviderRegistration{
+					ServiceAccount: kcmv1.ServiceAccountReference{Namespace: sveltosNS, Name: adapterServiceAccountName},
+				},
+			}))
+		})
+
+		It("leaves an object Helm already owns alone", func() {
+			smp := new(kcmv1.StateManagementProvider)
+			Expect(k8sClient.Get(ctx, key, smp)).To(Succeed())
+			smp.Labels = map[string]string{helmManagedByLabel: "Helm"}
+			smp.Annotations = map[string]string{helmReleaseNameAnnotation: sveltosRelease, helmReleaseNamespaceAnnot: sveltosNS}
+			smp.Spec = kcmv1.StateManagementProviderSpec{Registration: unrelatedRegistration}
+			Expect(k8sClient.Update(ctx, smp)).To(Succeed())
+
+			r := &ManagementReconciler{Client: k8sClient}
+			Expect(r.handOverStateManagementProvider(ctx)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, key, smp)).To(Succeed())
+			Expect(smp.Spec.Registration).To(Equal(unrelatedRegistration))
+		})
+
+		It("does not create the object when it is missing", func() {
+			smp := new(kcmv1.StateManagementProvider)
+			Expect(k8sClient.Get(ctx, key, smp)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, smp)).To(Succeed())
+
+			r := &ManagementReconciler{Client: k8sClient}
+			Expect(r.handOverStateManagementProvider(ctx)).To(Succeed())
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, new(kcmv1.StateManagementProvider)))).To(BeTrue())
+		})
+	})
+
 	Context("setCondition", func() {
 		It("should set a condition with error message", func() {
 			mgmt := &kcmv1.Management{

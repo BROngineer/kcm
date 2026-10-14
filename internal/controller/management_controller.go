@@ -21,7 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +29,6 @@ import (
 	"github.com/BurntSushi/toml"
 	helmcontrollerv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
-	addoncontrollerv1beta1 "github.com/projectsveltos/addon-controller/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -187,9 +186,11 @@ func (r *ManagementReconciler) update(ctx context.Context, management *kcmv1.Man
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureStateManagementProvider(ctx, management); err != nil {
-		r.warnf(management, "EnsureStateManagementProviderFailed", "failed to ensure StateManagementProvider is created: %v", err)
-		l.Error(err, "failed to ensure StateManagementProvider is created")
+	// before components are reconciled, so Helm never upgrades onto an object it cannot adopt.
+	if err := r.handOverStateManagementProvider(ctx); err != nil {
+		r.warnf(management, "StateManagementProviderHandOverFailed", "failed to hand StateManagementProvider over to Helm: %v", err)
+		l.Error(err, "failed to hand StateManagementProvider over to Helm")
+		return ctrl.Result{}, err
 	}
 
 	opts := components.ReconcileComponentsOpts{
@@ -403,97 +404,44 @@ func (r *ManagementReconciler) ensureAccessManagement(ctx context.Context, mgmt 
 	return nil
 }
 
-func (r *ManagementReconciler) ensureStateManagementProvider(ctx context.Context, mgmt *kcmv1.Management) error {
-	l := ctrl.LoggerFrom(ctx).WithValues("provider_name", kcmv1.ProviderSveltosName)
-
-	if _, defined := mgmt.Status.Components[kcmv1.ProviderSveltosName]; !defined {
-		return nil
-	}
-
-	l.Info("Ensuring built-in StateManagementProvider for ProjectSveltos is created")
-	currentNamespace := kubeutil.CurrentNamespace()
-	currentKcmName := os.Getenv("KCM_NAME")
-
+// handOverStateManagementProvider hands the StateManagementProvider kcm used to create
+// over to Helm, which now ships it with the adapter in the projectsveltos component.
+// Helm refuses to adopt an object without its ownership metadata. The registration is
+// set right away, so the adapter keeps registering until Helm applies its own copy.
+func (r *ManagementReconciler) handOverStateManagementProvider(ctx context.Context) error {
 	const (
-		appsAPIGroupVersion = "apps/v1"
-		deploymentKind      = "Deployment"
-
-		projectSveltosDeploymentName      = "addon-controller"
-		projectSveltosDeploymentNamespace = "projectsveltos"
-		profilesResource                  = "profiles"
-		clustersummariesResource          = "clustersummaries"
-	)
-	var (
-		projectSveltosAPIGroup   = addoncontrollerv1beta1.GroupVersion.Group
-		projectSveltosAPIVersion = addoncontrollerv1beta1.GroupVersion.Version
+		helmManagedByLabel             = "app.kubernetes.io/managed-by"
+		helmReleaseNameAnnotation      = "meta.helm.sh/release-name"
+		helmReleaseNamespaceAnnotation = "meta.helm.sh/release-namespace"
 	)
 
-	stateManagementProvider := &kcmv1.StateManagementProvider{
-		Name: kubeutil.DefaultStateManagementProvider,
-		OwnerReferences: []metav1.OwnerReference{
-			{
-				APIVersion: kcmv1.GroupVersion.String(),
-				Kind:       mgmt.Kind,
-				Name:       mgmt.Name,
-				UID:        mgmt.UID,
-			},
-		},
-		Spec: kcmv1.StateManagementProviderSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					kubeutil.DefaultStateManagementProviderSelectorKey: kubeutil.DefaultStateManagementProviderSelectorValue,
-				},
-			},
-			Adapter: kcmv1.ResourceReference{
-				APIVersion: appsAPIGroupVersion,
-				Kind:       deploymentKind,
-				Name:       currentKcmName,
-				Namespace:  currentNamespace,
-				ReadinessRule: `self.status.availableReplicas == self.status.replicas &&
-self.status.availableReplicas == self.status.updatedReplicas &&
-self.status.availableReplicas == self.status.readyReplicas`,
-			},
-			Provisioner: []kcmv1.ResourceReference{
-				{
-					APIVersion: appsAPIGroupVersion,
-					Kind:       deploymentKind,
-					Name:       projectSveltosDeploymentName,
-					Namespace:  projectSveltosDeploymentNamespace,
-					ReadinessRule: `self.status.availableReplicas == self.status.replicas &&
-self.status.availableReplicas == self.status.updatedReplicas &&
-self.status.availableReplicas == self.status.readyReplicas`,
-				},
-			},
-			ProvisionerCRDs: []kcmv1.ProvisionerCRD{
-				{
-					Group:   projectSveltosAPIGroup,
-					Version: projectSveltosAPIVersion,
-					Resources: []string{
-						profilesResource,
-						clustersummariesResource,
-					},
-				},
-			},
-			Suspend: false,
-		},
+	smp := new(kcmv1.StateManagementProvider)
+	if err := r.Client.Get(ctx, client.ObjectKey{Name: kubeutil.DefaultStateManagementProvider}, smp); err != nil {
+		return client.IgnoreNotFound(err)
 	}
-
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(stateManagementProvider), stateManagementProvider)
-	if client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("failed to get %s StateManagementProvider object: %w", stateManagementProvider.GetName(), err)
-	}
-	if err == nil {
+	if smp.Labels[helmManagedByLabel] == "Helm" {
 		return nil
 	}
 
-	if err = r.Client.Create(ctx, stateManagementProvider); err != nil {
-		err = fmt.Errorf("failed to create %s StateManagementProvider object: %w", stateManagementProvider.GetName(), err)
-		r.warnf(mgmt, "StateManagementProviderCreateFailed", err.Error())
-		return err
+	metav1.SetMetaDataLabel(&smp.ObjectMeta, helmManagedByLabel, "Helm")
+	metav1.SetMetaDataAnnotation(&smp.ObjectMeta, helmReleaseNameAnnotation, kcmv1.ProviderSveltosName)
+	metav1.SetMetaDataAnnotation(&smp.ObjectMeta, helmReleaseNamespaceAnnotation, components.SveltosNamespace)
+	// Helm never touches owner references: deleting Management would collect a Helm-owned object.
+	smp.OwnerReferences = slices.DeleteFunc(smp.OwnerReferences, func(ref metav1.OwnerReference) bool {
+		return ref.Kind == kcmv1.ManagementKind
+	})
+	smp.Spec = kcmv1.StateManagementProviderSpec{
+		Registration: kcmv1.ProviderRegistration{
+			ServiceAccount: kcmv1.ServiceAccountReference{
+				Namespace: components.SveltosNamespace,
+				Name:      components.StateManagementAdapterName,
+			},
+		},
 	}
-
-	l.Info("Successfully created StateManagementProvider object")
-	r.eventf(mgmt, "StateManagementProviderCreated", "Created %s StateManagementProvider object", stateManagementProvider.GetName())
+	if err := r.Client.Update(ctx, smp); err != nil {
+		return fmt.Errorf("failed to hand %s StateManagementProvider over to Helm: %w", smp.Name, err)
+	}
+	ctrl.LoggerFrom(ctx).Info("Handed StateManagementProvider over to Helm", "name", smp.Name)
 	return nil
 }
 

@@ -48,6 +48,13 @@ import (
 	pullsecretutil "github.com/K0rdent/kcm/internal/util/pullsecret"
 )
 
+const (
+	// SveltosNamespace is where the projectsveltos component, the adapter included, is installed.
+	SveltosNamespace = "projectsveltos"
+	// StateManagementAdapterName names the adapter's objects, its ServiceAccount included.
+	StateManagementAdapterName = "ksm-provider-sveltos"
+)
+
 type ReconcileComponentsOpts struct {
 	// KubeConfigRef is a reference to the Secret containing the kubeconfig
 	// of the target cluster where components will be installed. If unset,
@@ -346,8 +353,6 @@ func getWrappedComponents(ctx context.Context, cluster clusterInterface, release
 
 	components = append(components, capiComp)
 
-	const sveltosTargetNamespace = "projectsveltos"
-
 	for _, p := range cluster.Components().Providers {
 		c := component{
 			Component: p.Component,
@@ -369,7 +374,7 @@ func getWrappedComponents(ctx context.Context, cluster clusterInterface, release
 
 		if p.Name == kcmv1.ProviderSveltosName {
 			c.isCAPIProvider = false
-			c.targetNamespace = sveltosTargetNamespace
+			c.targetNamespace = SveltosNamespace
 			c.installSettings = &helmcontrollerv2.Install{
 				CreateNamespace: true,
 				Remediation:     remediationSettings,

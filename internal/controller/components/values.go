@@ -220,8 +220,8 @@ func getStateManagementAdapterValues(opts ReconcileComponentsOpts) map[string]an
 
 	values := map[string]any{
 		adapterEnabledKey: true,
-		// kcm's registry allow-list refers to the adapter's ServiceAccount by this name.
-		"fullnameOverride":  "ksm-provider-sveltos",
+		// the StateManagementProvider declares the adapter's ServiceAccount by this name.
+		"fullnameOverride":  StateManagementAdapterName,
 		"systemNamespace":   opts.Namespace,
 		"kcmServiceAccount": adapter.KCMServiceAccount,
 		"tls":               map[string]any{"insecure": adapter.Insecure},
